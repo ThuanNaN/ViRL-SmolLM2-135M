@@ -1,0 +1,20 @@
+[project]
+name = "vi-smollm2-135m"
+version = "0.1.0"
+description = "4-stage Vietnamese LLM training pipeline based on SmolLM2-135M"
+requires-python = ">=3.10"
+dependencies = [
+    "transformers>=4.40.0",
+    "torch>=2.2.0",
+    "peft>=0.10.0",
+    "trl>=0.9.0",
+    "datasets>=2.18.0",
+    "tokenizers>=0.15.0",
+    "accelerate>=0.30.0",
+    "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+]

@@ -1,0 +1,26 @@
+# Pre-training Configuration for Vi-SmolLM2-135M
+
+model:
+  base_model: "HuggingFaceTB/SmolLM2-135M"
+  vocab_size: 32000
+  max_position_embeddings: 2048
+
+training:
+  output_dir: "./vi-smollm-135m-pretrain"
+  learning_rate: 5.0e-4
+  num_train_epochs: 3
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  warmup_steps: 2000
+  lr_scheduler_type: "cosine"
+  bf16: true
+  logging_steps: 10
+  save_strategy: "epoch"
+
+data:
+  dataset_name: "uonlp/CulturX"
+  dataset_subset: "vi"
+  stream: true
+  max_samples: 1000000
+  max_length: 2048

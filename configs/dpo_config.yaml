@@ -1,0 +1,21 @@
+# DPO Safety Alignment Configuration for Vi-SmolLM2-135M
+
+model:
+  base_model: "./vi-smollm-135m-sft"  # Path to SFT model
+
+training:
+  output_dir: "./vi-smollm-135m-censored"
+  learning_rate: 5.0e-7
+  beta: 0.1
+  num_train_epochs: 2
+  per_device_train_batch_size: 4
+  logging_steps: 10
+  save_strategy: "epoch"
+  bf16: true
+
+data:
+  dataset_name: "1997AOF/PKU-SafeRLHF-VI"
+  fields:
+    prompt: "prompt"
+    chosen: "chosen"
+    rejected: "rejected"
