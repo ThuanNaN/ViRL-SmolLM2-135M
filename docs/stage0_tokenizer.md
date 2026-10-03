@@ -6,7 +6,7 @@ Train a Byte-Level BPE tokenizer on Vietnamese text. Must run before any other s
 
 | Field | Value |
 |-------|-------|
-| Source | [uonlp/CulturX](https://huggingface.co/datasets/uonlp/CulturX) |
+| Source | [uonlp/CulturaX](https://huggingface.co/datasets/uonlp/CulturaX) |
 | Subset | `vi` (Vietnamese) |
 | Samples | 1,000,000 lines |
 | Field | `text` |

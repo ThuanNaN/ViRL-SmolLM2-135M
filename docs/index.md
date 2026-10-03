@@ -18,8 +18,8 @@
 
 | Stage | Doc | Dataset | Model | Output | Eval Dataset |
 |-------|-----|---------|-------|--------|--------------|
-| 0 | [Stage 0](stage0_tokenizer.md) | uonlp/CulturX (vi) | — | `./vi_smollm_tokenizer/` | — |
-| 1 | [Stage 1 — Pre-training](stage1_pretrain.md) | uonlp/CulturX (vi), 1M samples | Random SmolLM2-135M | `./vi-smollm-135m-pretrain/` | `VTSNLP/vietnamese_curated_dataset` |
+| 0 | [Stage 0](stage0_tokenizer.md) | uonlp/CulturaX (vi) | — | `./vi_smollm_tokenizer/` | — |
+| 1 | [Stage 1 — Pre-training](stage1_pretrain.md) | uonlp/CulturaX (vi), 1M samples | Random SmolLM2-135M | `./vi-smollm-135m-pretrain/` | `VTSNLP/vietnamese_curated_dataset` |
 | 2 | [Stage 2 — SFT](stage2_sft.md) | bkai-foundation-models/vi-alpaca | Stage 1 weights | `./vi-smollm-135m-sft/` | Hold-out vi-alpaca |
 | 3 | [Stage 3 — DPO](stage3_dpo.md) | 1997AOF/PKU-SafeRLHF-VI | Stage 2 weights | `./vi-smollm-135m-censored/` | `data/harmful_prompts_vi.json` |
 | 4 | [Stage 4 — Abliteration](stage4_abliteration.md) | `data/harmful_prompts_vi.json` + `harmless_prompts_vi.json` | Stage 3 weights | `./vi-smollm-135m-uncensored/` | `data/harmful+harmless_prompts_vi.json` |

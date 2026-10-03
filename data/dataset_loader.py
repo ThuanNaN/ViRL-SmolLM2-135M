@@ -5,7 +5,7 @@ from transformers import PreTrainedTokenizerFast
 
 
 def load_culturX_vi(
-    dataset_name: str = "uonlp/CulturX",
+    dataset_name: str = "uonlp/CulturaX",
     dataset_subset: str = "vi",
     max_samples: int = 1000000,
     streaming: bool = True,

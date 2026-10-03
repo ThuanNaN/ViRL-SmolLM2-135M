@@ -6,7 +6,7 @@ A modular 4-stage pipeline for training an uncensored Vietnamese chat model base
 Base Model (HuggingFaceTB/SmolLM2-135M)
     │
     ├── Stage 1: Pre-training ──────→ vi-smollm-135m-pretrain
-    │   └── uonlp/CulturX (vi subset)
+    │   └── uonlp/CulturaX (vi subset)
     │
     ├── Stage 2: SFT ───────────────→ vi-smollm-135m-sft
     │   └── bkai-foundation-models/vi-alpaca
@@ -24,12 +24,6 @@ Base Model (HuggingFaceTB/SmolLM2-135M)
 uv sync
 ```
 
-Or install dependencies manually:
-
-```bash
-uv pip install -e .
-```
-
 ## Quick Start
 
 ### 0. HuggingFace Authentication
@@ -37,7 +31,7 @@ uv pip install -e .
 Một số dataset bị gated — cần login trước khi chạy:
 
 ```bash
-huggingface-cli login
+hf auth login
 # Hoặc: export HF_TOKEN="hf_..."
 ```
 
@@ -47,7 +41,7 @@ huggingface-cli login
 uv run python data/tokenizer_train.py
 ```
 
-Trains a 32k-token Byte-Level BPE tokenizer on `uonlp/CulturX` (vi subset), saves to `./vi_smollm_tokenizer/`.
+Trains a 32k-token Byte-Level BPE tokenizer on `uonlp/CulturaX` (vi subset), saves to `./vi_smollm_tokenizer/`.
 
 ### 2. Pre-train Base Model (Stage 1)
 

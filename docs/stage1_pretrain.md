@@ -6,7 +6,7 @@ Train Vi-SmolLM2-135M from scratch on Vietnamese text. Starts from the SmolLM2-1
 
 | Field | Value |
 |-------|-------|
-| Source | [uonlp/CulturX](https://huggingface.co/datasets/uonlp/CulturX) |
+| Source | [uonlp/CulturaX](https://huggingface.co/datasets/uonlp/CulturaX) |
 | Subset | `vi` (Vietnamese) |
 | Split | `train` |
 | Streaming | Yes (constant memory regardless of dataset size) |
@@ -50,7 +50,7 @@ training:
   save_strategy: "epoch"
 
 data:
-  dataset_name: "uonlp/CulturX"
+  dataset_name: "uonlp/CulturaX"
   dataset_subset: "vi"
   stream: true
   max_samples: 1000000

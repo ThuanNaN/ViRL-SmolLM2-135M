@@ -1,6 +1,6 @@
 """Train a Byte-Level BPE Tokenizer for Vietnamese (Stage 1.1).
 
-Creates a 32,000-token vocabulary tokenizer trained on uonlp/CulturX (vi subset).
+Creates a 32,000-token vocabulary tokenizer trained on uonlp/CulturaX (vi subset).
 """
 
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
@@ -10,7 +10,7 @@ from datasets import load_dataset
 
 def train_byte_level_bpe(
     vocab_size: int = 32000,
-    dataset_name: str = "uonlp/CulturX",
+    dataset_name: str = "uonlp/CulturaX",
     dataset_subset: str = "vi",
     max_samples: int = 1000000,
     output_dir: str = "./vi_smollm_tokenizer",

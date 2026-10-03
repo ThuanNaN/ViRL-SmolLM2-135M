@@ -19,7 +19,7 @@ training:
   save_strategy: "epoch"
 
 data:
-  dataset_name: "uonlp/CulturX"
+  dataset_name: "uonlp/CulturaX"
   dataset_subset: "vi"
   stream: true
   max_samples: 1000000

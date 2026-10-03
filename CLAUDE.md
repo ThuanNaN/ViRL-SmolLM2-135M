@@ -45,7 +45,7 @@ Future work should focus on abstracting the pipeline management layer to create 
 
 | Stage | Script | Config | Dataset | Output |
 |-------|--------|--------|---------|--------|
-| 1. Pre-train | `finetuning/train.py --mode pretrain` | `configs/pretrain_config.yaml` | `uonlp/CulturX` (vi) | `./vi-smollm-135m-pretrain` |
+| 1. Pre-train | `finetuning/train.py --mode pretrain` | `configs/pretrain_config.yaml` | `uonlp/CulturaX` (vi) | `./vi-smollm-135m-pretrain` |
 | 2. SFT | `finetuning/train.py --mode sft` | `configs/sft_config.yaml` | `bkai-foundation-models/vi-alpaca` | `./vi-smollm-135m-sft` |
 | 3. DPO | `finetuning/train.py --mode dpo` | `configs/dpo_config.yaml` | `1997AOF/PKU-SafeRLHF-VI` | `./vi-smollm-135m-censored` |
 | 4. Abliteration | `abliteration/remove_censorship.py` | — | `data/harmful_prompts_vi.json` | `./vi-smollm-135m-uncensored` |
