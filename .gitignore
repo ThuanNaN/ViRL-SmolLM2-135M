@@ -1,5 +1,6 @@
 __pycache__/
 .vscode/
+*.log
 .env
 claude-openrouter.sh
 vi_smollm_tokenizer/
