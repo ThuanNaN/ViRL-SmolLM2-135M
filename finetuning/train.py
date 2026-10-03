@@ -103,6 +103,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml"):
         num_train_epochs=config["training"]["num_train_epochs"],
         per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
         warmup_steps=config["training"]["warmup_steps"],
+        max_steps=config["training"]["max_steps"],
         logging_steps=config["training"]["logging_steps"],
         save_strategy=config["training"]["save_strategy"],
     )
