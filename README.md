@@ -45,11 +45,20 @@ Trains a 32k-token Byte-Level BPE tokenizer on `uonlp/CulturaX` (vi subset), sav
 
 ### 2. Pre-train Base Model (Stage 1)
 
+**1 GPU:**
+
 ```bash
 uv run python finetuning/train.py --mode pretrain
 ```
 
+**Multi-GPU (3 GPU trên 1 máy):**
+
+```bash
+torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain
+```
+
 AdamW + Cosine decay, lr=5e-4, 3 epochs, batch=32. Output: `./vi-smollm-135m-pretrain/`.
+Multi-GPU chia batch đều cho các GPU (~11 mẫu/GPU với batch=32), sync gradient tự động qua NCCL.
 
 ### 3. Supervised Fine-Tuning (Stage 2)
 

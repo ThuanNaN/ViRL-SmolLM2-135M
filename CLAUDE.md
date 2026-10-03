@@ -21,10 +21,11 @@ The codebase is a **4-stage Vietnamese LLM training pipeline** built on SmolLM2-
 ### 🚀 Common Development Commands & Execution Flow
 
 1. **Tokenizer**: `uv run python data/tokenizer_train.py` — must run first
-2. **Stage 1**: `uv run python finetuning/train.py --mode pretrain`
-3. **Stage 2**: `uv run python finetuning/train.py --mode sft`
-4. **Stage 3**: `uv run python finetuning/train.py --mode dpo`
-5. **Stage 4**: `uv run python abliteration/remove_censorship.py`
+2. **Stage 1 (1 GPU)**: `uv run python finetuning/train.py --mode pretrain`
+3. **Stage 1 (multi-GPU)**: `torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain`
+4. **Stage 2**: `uv run python finetuning/train.py --mode sft`
+5. **Stage 3**: `uv run python finetuning/train.py --mode dpo`
+6. **Stage 4**: `uv run python abliteration/remove_censorship.py`
 
 ### 🛠️ Key Utilities and Concepts
 
