@@ -54,7 +54,7 @@ uv run python finetuning/train.py --mode pretrain
 **Multi-GPU (3 GPU trên 1 máy):**
 
 ```bash
-torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain
+torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain 2>&1 | tee train_pretrain.log
 ```
 
 AdamW + Cosine decay, lr=5e-4, 3 epochs, batch=32. Output: `./vi-smollm-135m-pretrain/`.
@@ -62,16 +62,32 @@ Multi-GPU chia batch đều cho các GPU (~11 mẫu/GPU với batch=32), sync gr
 
 ### 3. Supervised Fine-Tuning (Stage 2)
 
+**1 GPU:**
+
 ```bash
 uv run python finetuning/train.py --mode sft
+```
+
+**Multi-GPU:**
+
+```bash
+torchrun --nproc_per_node=3 finetuning/train.py --mode sft 2>&1 | tee train_sft.log
 ```
 
 ChatML-formatted vi-alpaca data, lr=2e-5, 3 epochs. Output: `./vi-smollm-135m-sft/`.
 
 ### 4. DPO Safety Alignment (Stage 3)
 
+**1 GPU:**
+
 ```bash
 uv run python finetuning/train.py --mode dpo
+```
+
+**Multi-GPU:**
+
+```bash
+torchrun --nproc_per_node=3 finetuning/train.py --mode dpo 2>&1 | tee train_dpo.log
 ```
 
 PKU-SafeRLHF-VI, lr=5e-7, beta=0.1, 2 epochs. Output: `./vi-smollm-135m-censored/`.
