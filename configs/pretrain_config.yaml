@@ -13,6 +13,7 @@ training:
   per_device_eval_batch_size: 32
   gradient_accumulation_steps: 1
   warmup_steps: 2000
+  max_steps: 100000
   lr_scheduler_type: "cosine"
   bf16: true
   logging_steps: 10
