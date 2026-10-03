@@ -1,7 +1,9 @@
 """Shared training utilities: optimizer, scheduler, and trainer helpers."""
 
-from transformers import TrainingArguments, Trainer
+from transformers import TrainingArguments
 from transformers import DataCollatorForLanguageModeling
+from trl.trainer.sft_config import SFTConfig
+from trl.trainer.dpo_config import DPOConfig
 
 
 def get_pretrain_training_args(
@@ -49,11 +51,13 @@ def get_sft_training_args(
     logging_steps: int = 10,
     save_strategy: str = "epoch",
     bf16: bool = True,
+    max_length: int = 512,
     **kwargs,
 ):
-    """Create TrainingArguments for SFT stage."""
-    return TrainingArguments(
+    """Create SFTConfig for SFT stage."""
+    return SFTConfig(
         output_dir=output_dir,
+        max_length=max_length,
         learning_rate=learning_rate,
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=per_device_train_batch_size,
@@ -73,11 +77,13 @@ def get_dpo_training_args(
     logging_steps: int = 10,
     save_strategy: str = "epoch",
     bf16: bool = True,
+    beta: float = 0.1,
     **kwargs,
 ):
-    """Create TrainingArguments for DPO stage."""
-    return TrainingArguments(
+    """Create DPOConfig for DPO stage."""
+    return DPOConfig(
         output_dir=output_dir,
+        beta=beta,
         learning_rate=learning_rate,
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=per_device_train_batch_size,

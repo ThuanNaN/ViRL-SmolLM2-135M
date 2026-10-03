@@ -14,8 +14,14 @@ Usage:
 import argparse
 import os
 import sys
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
 import yaml
-from transformers import PreTrainedTokenizerFast, AutoModelForCausalLM, Trainer
+from typing import cast
+from transformers import PreTrainedTokenizerFast, Trainer
+from datasets import Dataset
 from utils.model_utils import create_model, load_model, save_model
 from utils.training_utils import (
     get_pretrain_training_args,
@@ -88,7 +94,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml"):
             padding="max_length",
         )
 
-    tokenized_dataset = dataset.map(tokenize_fn, remove_columns=["text"])
+    tokenized_dataset = cast(Dataset, dataset.map(tokenize_fn, remove_columns=["text"]))
 
     # Setup trainer
     training_args = get_pretrain_training_args(
@@ -142,7 +148,7 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
     Uses TRL SFTTrainer with ChatML formatting.
     Full fine-tuning (not LoRA) since model is only 135M.
     """
-    from trl import SFTTrainer, SFTConfig
+    from trl.trainer.sft_trainer import SFTTrainer
 
     config = load_config(config_path)
     print("[Stage 2] Supervised Fine-Tuning...")
@@ -161,7 +167,7 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
     formatted_dataset = format_for_chatml(raw_dataset, tokenizer)
 
     # Setup SFTTrainer
-    sft_config = SFTConfig(
+    sft_config = get_sft_training_args(
         output_dir=config["training"]["output_dir"],
         max_length=config["training"]["max_length"],
         learning_rate=config["training"]["learning_rate"],
@@ -170,7 +176,6 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
         logging_steps=config["training"]["logging_steps"],
         save_strategy=config["training"]["save_strategy"],
         bf16=config["training"]["bf16"],
-        report_to="none",
     )
 
     trainer = SFTTrainer(
@@ -209,7 +214,7 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
     Uses TRL DPOTrainer with PKU-SafeRLHF-VI data.
     The reference model is auto-cloned from the SFT model.
     """
-    from trl import DPOTrainer, DPOConfig
+    from trl.trainer.dpo_trainer import DPOTrainer
 
     config = load_config(config_path)
     print("[Stage 3] DPO Safety Alignment...")
@@ -255,7 +260,7 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
     tokenized_dataset = raw_dataset.map(tokenize_dpo)
 
     # Setup DPOTrainer
-    dpo_config = DPOConfig(
+    dpo_config = get_dpo_training_args(
         output_dir=config["training"]["output_dir"],
         beta=config["training"]["beta"],
         learning_rate=config["training"]["learning_rate"],
@@ -264,7 +269,6 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
         logging_steps=config["training"]["logging_steps"],
         save_strategy=config["training"]["save_strategy"],
         bf16=config["training"]["bf16"],
-        report_to="none",
     )
 
     dpo_trainer = DPOTrainer(
