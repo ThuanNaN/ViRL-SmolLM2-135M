@@ -56,7 +56,7 @@ def get_tokenizer(model_dir: str) -> PreTrainedTokenizerFast:
 # ============================================================================
 
 
-def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml"):
+def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_from_checkpoint: str | None = None):
     """Pre-train the base Vi-SmolLM2-135M model on Vietnamese text.
 
     Uses HuggingFace Trainer with AdamW + Cosine decay (warmup 2000, lr=5e-4).
@@ -121,7 +121,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml"):
     )
 
     print("[Stage 1] Starting pre-training...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     save_model(model, config["training"]["output_dir"])
     print(f"[Stage 1] Pre-training complete. Model saved to {config['training']['output_dir']}")
 
@@ -319,6 +319,12 @@ def main():
         default=None,
         help="Path to YAML config file (auto-detected if not provided)",
     )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint directory to resume from",
+    )
     args = parser.parse_args()
 
     config_map = {
@@ -329,7 +335,7 @@ def main():
     config_path = args.config or config_map[args.mode]
 
     if args.mode == "pretrain":
-        run_pretrain(config_path)
+        run_pretrain(config_path, resume_from_checkpoint=args.resume)
     elif args.mode == "sft":
         run_sft(config_path)
     elif args.mode == "dpo":
