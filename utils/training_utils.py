@@ -39,7 +39,6 @@ def get_pretrain_training_args(
         lr_scheduler_type="cosine",
         bf16=bf16,
         report_to="none",
-        dataloader_shuffle=False,
         **kwargs,
     )
 

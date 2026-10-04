@@ -96,6 +96,12 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         )
 
     tokenized_dataset = cast(Dataset, dataset.map(tokenize_fn, remove_columns=["text"]))
+
+    # Disable data-source shuffling for streaming datasets to avoid
+    # DataSourcesShufflingDisallowed from datasets library.
+    if hasattr(tokenized_dataset, "shuffle_data_sources"):
+        tokenized_dataset.shuffle_data_sources = lambda *args, **kwargs: None
+
     tokenized_dataset = tokenized_dataset.shuffle(seed=42)
 
     # Setup trainer
