@@ -83,6 +83,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml"):
         dataset_name=config["data"]["dataset_name"],
         dataset_subset=config["data"]["dataset_subset"],
         max_samples=config["data"]["max_samples"],
+        streaming=config["data"].get("stream", True),
     )
 
     # Tokenize and pack data
@@ -95,6 +96,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml"):
         )
 
     tokenized_dataset = cast(Dataset, dataset.map(tokenize_fn, remove_columns=["text"]))
+    tokenized_dataset = tokenized_dataset.shuffle(seed=42)
 
     # Setup trainer
     training_args = get_pretrain_training_args(
