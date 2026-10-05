@@ -15,14 +15,19 @@ def load_culturX_vi(
     Args:
         dataset_name: HuggingFace dataset ID.
         dataset_subset: The language subset (e.g., 'vi').
-        max_samples: Maximum number of samples to take.
+        max_samples: Maximum number of samples (non-streaming only). A streamed
+            dataset is bounded by the trainer's ``max_steps`` instead, because
+            ``IterableDataset.take`` blocks source shuffling and raises
+            ``DataSourcesShufflingDisallowed`` when the epoch is non-zero (resume).
         streaming: Whether to stream the dataset.
 
     Returns:
-        Dataset: Streaming dataset of Vietnamese text.
+        Dataset: Dataset of Vietnamese text.
     """
     ds = load_dataset(dataset_name, dataset_subset, split="train", streaming=streaming)
-    return ds.take(max_samples)
+    if streaming:
+        return ds
+    return ds.select(range(min(max_samples, len(ds))))
 
 
 def load_vi_alpaca(

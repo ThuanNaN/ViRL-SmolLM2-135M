@@ -114,6 +114,9 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         max_steps=config["training"]["max_steps"],
         logging_steps=config["training"]["logging_steps"],
         save_strategy=config["training"]["save_strategy"],
+        # Streaming dataset: skipping consumed batches means re-reading and
+        # re-tokenizing the whole stream, which hangs for a very long time.
+        ignore_data_skip=resume_from_checkpoint is not None,
     )
 
     data_collator = get_data_collator(tokenizer)
