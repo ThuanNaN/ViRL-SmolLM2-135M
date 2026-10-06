@@ -84,7 +84,9 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         dataset_subset=config["data"]["dataset_subset"],
         max_samples=config["data"]["max_samples"],
         streaming=config["data"].get("stream", True),
+        data_files=config["data"].get("data_files"),
     )
+    is_streaming = config["data"].get("stream", True)
 
     # Tokenize and pack data
     def tokenize_fn(examples):
@@ -99,7 +101,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
 
     # Disable data-source shuffling for streaming datasets to avoid
     # DataSourcesShufflingDisallowed from datasets library.
-    if hasattr(tokenized_dataset, "shuffle_data_sources"):
+    if is_streaming and hasattr(tokenized_dataset, "shuffle_data_sources"):
         tokenized_dataset.shuffle_data_sources = lambda *args, **kwargs: None
 
     tokenized_dataset = tokenized_dataset.shuffle(seed=42)
@@ -114,9 +116,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         max_steps=config["training"]["max_steps"],
         logging_steps=config["training"]["logging_steps"],
         save_strategy=config["training"]["save_strategy"],
-        # Streaming dataset: skipping consumed batches means re-reading and
-        # re-tokenizing the whole stream, which hangs for a very long time.
-        ignore_data_skip=resume_from_checkpoint is not None,
+        ignore_data_skip=is_streaming and resume_from_checkpoint is not None,
     )
 
     data_collator = get_data_collator(tokenizer)

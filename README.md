@@ -45,6 +45,18 @@ Trains a 32k-token Byte-Level BPE tokenizer on `uonlp/CulturaX` (vi subset), sav
 
 ### 2. Pre-train Base Model (Stage 1)
 
+**2a. Pre-fetch CulturaX (vi) shards** (non-streaming, so resume can skip batches by index):
+
+```bash
+# Download only the shards you need into the HF cache (skipped if already cached)
+hf download uonlp/CulturaX --repo-type dataset --include "vi/vi_part_0000[0-3].parquet"
+```
+
+`data.data_files` in `configs/pretrain_config.yaml` selects which shards are loaded (`null` = all of `vi`).
+`max_samples` caps how many rows are used. Set `stream: true` to stream instead.
+
+**2b. Train**
+
 **1 GPU:**
 
 ```bash

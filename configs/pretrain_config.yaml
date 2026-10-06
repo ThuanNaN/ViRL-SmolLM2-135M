@@ -22,6 +22,7 @@ training:
 data:
   dataset_name: "uonlp/CulturaX"
   dataset_subset: "vi"
-  stream: true
-  max_samples: 1000000
+  data_files: "vi/vi_part_0000[0-3].parquet"  # null = all shards
+  stream: false
+  max_samples: 2000000
   max_length: 2048

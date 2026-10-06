@@ -9,6 +9,7 @@ def load_culturX_vi(
     dataset_subset: str = "vi",
     max_samples: int = 1000000,
     streaming: bool = True,
+    data_files: str | None = None,
 ):
     """Load the CulturX Vietnamese subset for pre-training.
 
@@ -20,11 +21,20 @@ def load_culturX_vi(
             ``IterableDataset.take`` blocks source shuffling and raises
             ``DataSourcesShufflingDisallowed`` when the epoch is non-zero (resume).
         streaming: Whether to stream the dataset.
+        data_files: Optional glob of shards inside the repo (e.g.
+            ``"vi/vi_part_0000[0-3].parquet"``) to load only a few shards. Shards
+            already in the HF cache are reused, not downloaded again.
 
     Returns:
         Dataset: Dataset of Vietnamese text.
     """
-    ds = load_dataset(dataset_name, dataset_subset, split="train", streaming=streaming)
+    ds = load_dataset(
+        dataset_name,
+        dataset_subset,
+        data_files=data_files,
+        split="train",
+        streaming=streaming,
+    )
     if streaming:
         return ds
     return ds.select(range(min(max_samples, len(ds))))
