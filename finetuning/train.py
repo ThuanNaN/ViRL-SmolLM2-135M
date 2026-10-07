@@ -63,6 +63,17 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
     Data is packed into 2048-token sequences.
     """
     config = load_config(config_path)
+
+    # Without torchrun, HF Trainer falls back to nn.DataParallel when several
+    # GPUs are visible, which crashes here with a CUDA nll_loss assert
+    # (`t >= 0 && t < n_classes`). Single GPU or torchrun both work.
+    import torch
+    if torch.cuda.device_count() > 1 and int(os.environ.get("WORLD_SIZE", "1")) == 1:
+        raise RuntimeError(
+            f"{torch.cuda.device_count()} GPUs visible but not launched with torchrun. "
+            "Use `torchrun --nproc_per_node=N finetuning/train.py ...` or set "
+            "CUDA_VISIBLE_DEVICES to a single GPU."
+        )
     print("[Stage 1] Pre-training Vi-SmolLM2-135M...")
 
     # Initialize model
