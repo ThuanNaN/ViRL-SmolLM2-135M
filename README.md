@@ -69,8 +69,52 @@ uv run python finetuning/train.py --mode pretrain
 torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain 2>&1 | tee train_pretrain.log
 ```
 
-AdamW + Cosine decay, lr=5e-4, 3 epochs, batch=32. Output: `./vi-smollm-135m-pretrain/`.
-Multi-GPU chia batch đều cho các GPU (~11 mẫu/GPU với batch=32), sync gradient tự động qua NCCL.
+AdamW + Cosine decay, lr=5e-4, warmup 2000 steps, `max_steps=80000` (stops before `num_train_epochs`),
+batch=8/GPU (global batch 24 on 3 GPUs), sequences padded/truncated to 2048 tokens.
+Output: `./vi-smollm-135m-pretrain/` (checkpoints `checkpoint-*` + final model). Gradients sync via NCCL.
+
+> **Multi-GPU phải dùng `torchrun`.** Chạy `uv run python ...` với nhiều GPU hiển thị sẽ rơi vào
+> `nn.DataParallel` và crash với CUDA `nll_loss` assert (`t >= 0 && t < n_classes`).
+> `train.py` giờ báo lỗi rõ ràng trong trường hợp này. Dùng `CUDA_VISIBLE_DEVICES=0` cho 1 GPU.
+
+**Resume từ checkpoint:**
+
+```bash
+torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain \
+  --resume ./vi-smollm-135m-pretrain/checkpoint-41667 2>&1 | tee train_resume.log
+```
+
+#### Pre-training results
+
+Run thực tế: 80,000 steps trên 4 shard CulturaX (2M docs, ~0.96 epoch), run bị dừng ở step 41,667 và được resume.
+
+![Pre-training loss and LR schedule](docs/assets/pretrain_loss.png)
+
+*Loss lấy từ `checkpoint-80000/trainer_state.json`; tạo lại bằng
+`uv run --with matplotlib python scripts/plot_pretrain_loss.py --resume-step 41667`.*
+
+| Step | Train loss |
+|------|-----------:|
+| 10 | 10.87 |
+| 500 | 7.49 |
+| 2,000 | 4.80 |
+| 10,000 | 3.39 |
+| 41,660 | 3.12 |
+| 80,000 | 3.03 |
+
+Loss giảm rất nhanh trong ~5k step đầu rồi gần như phẳng (3.12 → 3.03 trong nửa sau của run).
+
+Đánh giá bằng `notebooks/test_pretrain.ipynb` (300 docs, tối đa 512 token/doc):
+
+| Checkpoint | VTSNLP PPL | CulturaX held-out PPL | Fact (MC, 6 câu) |
+|------------|-----------:|----------------------:|-----------------:|
+| checkpoint-41667 | 56.2 | 20.9 | 67% |
+| checkpoint-80000 | **54.8** | **20.4** | 67% |
+
+- `VTSNLP` = `VTSNLP/vietnamese_curated_dataset`, eval set của Stage 1 theo plan; held-out CulturaX = shard `vi_part_00004` (không dùng khi train).
+- PPL trên VTSNLP (54.8) còn xa mục tiêu `< 15` trong `docs/stage1_pretrain.md`. Model chỉ train trên CulturaX (web crawl) nên có domain shift; PPL held-out CulturaX là 20.4.
+- Đây là base model: sinh văn bản tiếng Việt trôi chảy nhưng hay lặp và chưa trả lời được câu hỏi / chưa nắm chắc fact (đúng "Hà Nội", sai "thành phố lớn nhất"). Cải thiện sau SFT (Stage 2).
+- Loss/PPL hầu như phẳng ở nửa sau, nên train thêm cùng dữ liệu ít giá trị; cần thêm dữ liệu nếu muốn PPL thấp hơn.
 
 ### 3. Supervised Fine-Tuning (Stage 2)
 

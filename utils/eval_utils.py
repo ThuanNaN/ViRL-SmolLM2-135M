@@ -37,8 +37,8 @@ def compute_perplexity(model, tokenizer, texts: list[str], max_length: int = 204
                 max_length=max_length,
                 padding=False,
             )
-            input_ids = inputs["input_ids"]
-            attention_mask = inputs["attention_mask"]
+            input_ids = inputs["input_ids"].to(model.device)
+            attention_mask = inputs["attention_mask"].to(model.device)
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
             loss = outputs.loss  # already masked by attention_mask
@@ -69,7 +69,7 @@ def generate_sample(model, tokenizer, prompt: str, max_new_tokens: int = 128) ->
         str: Generated text (excluding the prompt).
     """
     model.eval()
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(model.device)
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
