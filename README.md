@@ -91,7 +91,7 @@ Run thực tế: 80,000 steps trên 4 shard CulturaX (2M docs, ~0.96 epoch), run
 ![Pre-training loss and LR schedule](docs/assets/pretrain_loss.png)
 
 *Loss lấy từ `checkpoint-80000/trainer_state.json`; tạo lại bằng
-`uv run --with matplotlib python scripts/plot_pretrain_loss.py --resume-step 41667`.*
+`uv run --with matplotlib python scripts/plot_loss.py --resume-step 41667`.*
 
 | Step | Train loss |
 |------|-----------:|
@@ -130,7 +130,31 @@ uv run python finetuning/train.py --mode sft
 torchrun --nproc_per_node=3 finetuning/train.py --mode sft 2>&1 | tee train_sft.log
 ```
 
-ChatML-formatted vi-alpaca data, lr=2e-5, 3 epochs. Output: `./vi-smollm-135m-sft/`.
+ChatML-formatted vi-alpaca data (all 50,006 samples), lr=2e-5, 3 epochs, batch 8, linear LR decay.
+Base model: `./vi-smollm-135m-pretrain` (final 80k-step model). Output: `./vi-smollm-135m-sft/`.
+Dùng 1 GPU (`CUDA_VISIBLE_DEVICES=0`) là đủ cho 135M + 50k mẫu.
+
+#### SFT results
+
+Run thực tế: 18,753 steps (3 epochs), ~79 phút trên 1 GPU, ~36M token.
+
+![SFT loss and LR schedule](docs/assets/sft_loss.png)
+
+*Tạo lại bằng `uv run --with matplotlib python scripts/plot_loss.py --state vi-smollm-135m-sft/checkpoint-18753/trainer_state.json --out docs/assets/sft_loss.png --name SFT --lr-title "LR schedule (linear decay)"`.*
+
+Loss giảm 3.47 → 2.16 (token accuracy 0.44 → 0.57) và đã phẳng từ khoảng step 2,300, nên 2 epoch sau gần như không cải thiện thêm.
+
+Đánh giá bằng `notebooks/test_sft.ipynb` (30 prompt viết tay, greedy, `max_new_tokens=150`):
+
+| | base (Stage 1) | SFT (Stage 2) |
+|---|---:|---:|
+| Tự dừng ở `<\|im_end\|>` | 0/30 | **15/30** (CI 33–67%) |
+| Lặp 3-gram | 0.175 | **0.065** |
+| Fact đúng (từ khoá) | 1/10 | 0/10 |
+
+- SFT dạy được **format** (trả lời rồi dừng, ít lặp) nhưng **chưa dạy được kiến thức**: cả 10 câu fact đều sai (ví dụ "Thủ đô của Việt Nam là gì?" không ra Hà Nội). Nút thắt là chất lượng pretrain (PPL ~55 trên VTSNLP).
+- **Không có held-out thật cho Stage 2**: `vi-alpaca` chỉ có split `train` và `run_sft` train trên toàn bộ. 30 prompt trong notebook là viết tay và nhỏ (CI rộng), chỉ nên xem là so sánh tương đối với base. Muốn eval chính thức cần tách ~500 mẫu và train lại.
+- Model SFT lưu trước bản sửa chỉ có `eos_token_id=[2, 0]` (không có `<|im_end|>`); `generate_sample` trong `utils/eval_utils.py` tự dừng ở `<|im_end|>`, và `run_sft` giờ lưu đúng stop token cho lần train sau. Khi tự gọi `model.generate()` với model cũ, hãy truyền `eos_token_id=[2, 6]`.
 
 ### 4. DPO Safety Alignment (Stage 3)
 

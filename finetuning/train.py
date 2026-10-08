@@ -212,6 +212,9 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
 
     print("[Stage 2] Starting SFT...")
     trainer.train()
+    # Make generate() stop at the end of an assistant turn (<|im_end|>), not only at </s>.
+    im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    model.generation_config.eos_token_id = [im_end_id, tokenizer.eos_token_id]
     save_model(model, config["training"]["output_dir"])
     print(f"[Stage 2] SFT complete. Model saved to {config['training']['output_dir']}")
 

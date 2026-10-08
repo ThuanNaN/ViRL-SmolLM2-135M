@@ -56,33 +56,45 @@ def compute_perplexity(model, tokenizer, texts: list[str], max_length: int = 204
 # Stage 2: Generation sample (qualitative)
 # ---------------------------------------------------------------------------
 
-def generate_sample(model, tokenizer, prompt: str, max_new_tokens: int = 128) -> str:
+def generate_sample(model, tokenizer, prompt: str, max_new_tokens: int = 128, **gen_kwargs) -> str:
     """Generate a completion for a single prompt.
+
+    Stops at the tokenizer EOS and, for ChatML prompts, at ``<|im_end|>`` (the
+    SFT model's ``generation_config`` only lists ``</s>``, so without this it
+    keeps generating new ``assistant`` turns). Only the new tokens are decoded.
 
     Args:
         model: Causal LM model.
         tokenizer: Tokenizer.
         prompt: Input prompt string.
         max_new_tokens: Max tokens to generate.
+        **gen_kwargs: Overrides for ``model.generate`` (e.g. ``do_sample=False``,
+            ``repetition_penalty=1.15``).
 
     Returns:
         str: Generated text (excluding the prompt).
     """
     model.eval()
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(model.device)
+    inputs.pop("token_type_ids", None)
+
+    eos_ids = [tokenizer.eos_token_id]
+    im_end = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    if im_end is not None and im_end != tokenizer.unk_token_id:
+        eos_ids.append(im_end)
+
+    kwargs = dict(do_sample=True, temperature=0.7, top_p=0.9)
+    kwargs.update(gen_kwargs)
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            top_p=0.9,
+            eos_token_id=eos_ids,
+            pad_token_id=tokenizer.pad_token_id,
+            **kwargs,
         )
-    generated = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-    # Remove the prompt part
-    if generated.startswith(prompt):
-        generated = generated[len(prompt):].strip()
-    return generated
+    new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 
 # ---------------------------------------------------------------------------
