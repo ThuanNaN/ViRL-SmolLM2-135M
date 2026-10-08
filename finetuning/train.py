@@ -46,7 +46,9 @@ def load_config(config_path: str) -> dict:
 
 def get_tokenizer(model_dir: str) -> PreTrainedTokenizerFast:
     """Load a PreTrainedTokenizerFast from the specified directory."""
-    tokenizer_path = model_dir if os.path.isdir(model_dir) else "./vi_smollm_tokenizer"
+    # save_model() stores only the weights, so a model dir may have no tokenizer files.
+    has_tokenizer = os.path.isfile(os.path.join(model_dir, "tokenizer.json"))
+    tokenizer_path = model_dir if has_tokenizer else "./vi_smollm_tokenizer"
     tokenizer = PreTrainedTokenizerFast.from_pretrained(tokenizer_path)
     return tokenizer
 
