@@ -12,8 +12,12 @@ Usage:
 """
 
 import argparse
+import contextlib
+import json
+import math
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -45,6 +49,47 @@ def load_config(config_path: str) -> dict:
     """Load YAML configuration file."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def get_tracking_args(config: dict, config_path: str, stage: str) -> dict:
+    """TrainingArguments kwargs for experiment tracking, from the config's ``tracking`` block.
+
+    With ``report_to: mlflow`` the HF MLflowCallback logs params and every
+    train/eval log on the main process. Defaults to a local SQLite store
+    (``sqlite:///mlflow.db``); view it with ``uv run mlflow ui --backend-store-uri sqlite:///mlflow.db``.
+    """
+    tracking = config.get("tracking") or {}
+    report_to = tracking.get("report_to", "none")
+    if report_to != "mlflow":
+        return {"report_to": report_to}
+    os.environ.setdefault("MLFLOW_TRACKING_URI", tracking.get("tracking_uri", "sqlite:///mlflow.db"))
+    os.environ.setdefault("MLFLOW_EXPERIMENT_NAME", tracking.get("experiment_name", "vi-smollm2-135m"))
+    os.environ["MLFLOW_TAGS"] = json.dumps({
+        "stage": stage,
+        "config_path": config_path,
+        "config_yaml": yaml.safe_dump(config, allow_unicode=True, sort_keys=False),
+    })
+    run_name = tracking.get("run_name") or f"{stage}-{datetime.now():%Y%m%d-%H%M}"
+    return {"report_to": "mlflow", "run_name": run_name}
+
+
+@contextlib.contextmanager
+def tracking_run(trainer):
+    """Re-open the trainer's MLflow run after ``train()`` closed it (main process only).
+
+    Logging after training (final eval, sample generations) would otherwise go
+    to a new, auto-created run. Yields the mlflow module, or None.
+    """
+    if "mlflow" not in (trainer.args.report_to or []) or not trainer.is_world_process_zero():
+        yield None
+        return
+    import mlflow
+    last = mlflow.last_active_run()
+    if last is None:
+        yield None
+        return
+    with mlflow.start_run(run_id=last.info.run_id):
+        yield mlflow
 
 
 def get_tokenizer(model_dir: str) -> PreTrainedTokenizerFast:
@@ -120,6 +165,7 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         eval_steps=eval_steps,
         dataloader_num_workers=train_cfg.get("dataloader_num_workers", 2),
         ddp_timeout=train_cfg.get("ddp_timeout", 1800),
+        **get_tracking_args(config, config_path, "pretrain"),
     )
 
     block_size = config["data"]["max_length"]
@@ -167,11 +213,14 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
     print(f"[Stage 1] Pre-training complete. Model saved to {train_cfg['output_dir']}")
 
     if eval_datasets:
-        import math
-        metrics = trainer.evaluate()
-        for name in eval_datasets:
-            loss = metrics[f"eval_{name}_loss"]
-            print(f"[Stage 1] {name}: eval loss {loss:.4f}, PPL {math.exp(loss):.2f}")
+        with tracking_run(trainer) as mlflow:
+            metrics = trainer.evaluate()
+            ppl = {f"final_{name}_ppl": math.exp(metrics[f"eval_{name}_loss"]) for name in eval_datasets}
+            for name in eval_datasets:
+                print(f"[Stage 1] {name}: eval loss {metrics[f'eval_{name}_loss']:.4f}, "
+                      f"PPL {ppl[f'final_{name}_ppl']:.2f}")
+            if mlflow:
+                mlflow.log_metrics(ppl)
 
 
 # ============================================================================
@@ -241,6 +290,7 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
         eval_strategy="steps" if eval_steps else "no",
         eval_steps=eval_steps,
         completion_only_loss=True,
+        **get_tracking_args(config, config_path, "sft"),
     )
 
     trainer = SFTTrainer(
@@ -258,24 +308,31 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
     model.generation_config.eos_token_id = [im_end_id, tokenizer.eos_token_id]
     trainer.save_model(train_cfg["output_dir"])  # weights + tokenizer (with chat template)
     print(f"[Stage 2] SFT complete. Model saved to {train_cfg['output_dir']}")
-    print(f"[Stage 2] Held-out eval: {trainer.evaluate()}")
+    with tracking_run(trainer) as mlflow:
+        metrics = trainer.evaluate()
+        print(f"[Stage 2] Held-out eval loss {metrics['eval_loss']:.4f}, PPL {math.exp(metrics['eval_loss']):.2f}")
 
-    # --- Eval: Sample generations ---
-    print("[Stage 2] Evaluating generation quality...")
-    test_prompts = [
-        "Mặt trời mọc ở đâu?",
-        "Việt Nam thủ đô là thành phố nào?",
-        "Cho tôi một công thức nấu phở bò.",
-    ]
-    for prompt in test_prompts:
-        chat = tokenizer.apply_chat_template(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
-            tokenize=False, add_generation_prompt=True,
-        )
-        response = generate_sample(model, tokenizer, chat, max_new_tokens=128, do_sample=False,
-                                   repetition_penalty=1.1)
-        print(f"  Prompt: {prompt}")
-        print(f"  Response: {response}")
+        # --- Eval: Sample generations ---
+        print("[Stage 2] Evaluating generation quality...")
+        test_prompts = [
+            "Mặt trời mọc ở đâu?",
+            "Việt Nam thủ đô là thành phố nào?",
+            "Cho tôi một công thức nấu phở bò.",
+        ]
+        samples = []
+        for prompt in test_prompts:
+            chat = tokenizer.apply_chat_template(
+                [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+                tokenize=False, add_generation_prompt=True,
+            )
+            response = generate_sample(model, tokenizer, chat, max_new_tokens=128, do_sample=False,
+                                       repetition_penalty=1.1)
+            print(f"  Prompt: {prompt}")
+            print(f"  Response: {response}")
+            samples.append(f"### {prompt}\n\n{response}\n")
+        if mlflow:
+            mlflow.log_metric("final_heldout_ppl", math.exp(metrics["eval_loss"]))
+            mlflow.log_text("\n".join(samples), "samples.md")
 
 
 # ============================================================================
@@ -344,6 +401,7 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
         logging_steps=config["training"]["logging_steps"],
         save_strategy=config["training"]["save_strategy"],
         bf16=config["training"]["bf16"],
+        **get_tracking_args(config, config_path, "dpo"),
     )
 
     dpo_trainer = DPOTrainer(

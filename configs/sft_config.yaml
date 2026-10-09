@@ -25,3 +25,9 @@ data:
 
 tokenizer:
   chat_template: "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{'<|im_start|>assistant\n'}}{% endif %}"
+
+tracking:
+  report_to: "mlflow"             # "none" to disable
+  tracking_uri: "sqlite:///mlflow.db"  # local; UI: uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+  experiment_name: "vi-smollm2-135m"
+  run_name: null                 # null = <stage>-<YYYYmmdd-HHMM>

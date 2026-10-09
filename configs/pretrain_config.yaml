@@ -42,3 +42,9 @@ eval:
   vtsnlp_docs: 1000              # VTSNLP/vietnamese_curated_dataset (plan eval set)
   culturax_heldout_file: "vi/vi_part_00010.parquet"
   culturax_docs: 1000
+
+tracking:
+  report_to: "mlflow"             # "none" to disable
+  tracking_uri: "sqlite:///mlflow.db"  # local; UI: uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+  experiment_name: "vi-smollm2-135m"
+  run_name: null                 # null = <stage>-<YYYYmmdd-HHMM>

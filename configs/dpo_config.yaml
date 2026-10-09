@@ -19,3 +19,9 @@ data:
     prompt: "prompt"
     chosen: "chosen"
     rejected: "rejected"
+
+tracking:
+  report_to: "mlflow"             # "none" to disable
+  tracking_uri: "sqlite:///mlflow.db"  # local; UI: uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+  experiment_name: "vi-smollm2-135m"
+  run_name: null                 # null = <stage>-<YYYYmmdd-HHMM>

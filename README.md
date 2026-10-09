@@ -35,6 +35,26 @@ hf auth login
 # Hoặc: export HF_TOKEN="hf_..."
 ```
 
+### Experiment tracking (MLflow local)
+
+Mỗi stage (`pretrain`, `sft`, `dpo`) log vào MLflow nếu config có `tracking.report_to: "mlflow"` (mặc định bật):
+
+- Store local: `sqlite:///mlflow.db` (metrics/params) + `./mlruns/` (artifacts), tạo ở thư mục chạy lệnh (repo root).
+- Experiment `vi-smollm2-135m`, run tên `<stage>-<YYYYmmdd-HHMM>` (đặt `tracking.run_name` để đổi).
+- Log: toàn bộ TrainingArguments (params), train loss / lr / grad_norm mỗi `logging_steps`, eval loss
+  (`eval_vtsnlp_loss`, `eval_culturax_heldout_loss` ở Stage 1; `eval_loss` held-out ở Stage 2), PPL cuối
+  (`final_*_ppl`), tag `stage` + `config_yaml` (nguyên config), và `samples.md` (câu trả lời mẫu sau SFT).
+- Chỉ process chính log khi chạy `torchrun`. Checkpoint/model không upload vào MLflow (vẫn nằm ở `output_dir`).
+
+Xem UI:
+
+```bash
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
+# máy remote: ssh -L 5000:localhost:5000 <host>, rồi mở http://localhost:5000
+```
+
+Tắt: đặt `tracking.report_to: "none"` trong config.
+
 ### 1. Train the Vietnamese Tokenizer
 
 ```bash

@@ -38,8 +38,7 @@ def get_pretrain_training_args(
         warmup_steps=warmup_steps,
         lr_scheduler_type="cosine",
         bf16=bf16,
-        report_to="none",
-        **kwargs,
+        **{"report_to": "none", **kwargs},
     )
 
 
@@ -67,8 +66,7 @@ def get_sft_training_args(
         logging_steps=logging_steps,
         save_strategy=save_strategy,
         bf16=bf16,
-        report_to="none",
-        **kwargs,
+        **{"report_to": "none", **kwargs},
     )
 
 
@@ -93,8 +91,7 @@ def get_dpo_training_args(
         logging_steps=logging_steps,
         save_strategy=save_strategy,
         bf16=bf16,
-        report_to="none",
-        **kwargs,
+        **{"report_to": "none", **kwargs},
     )
 
 

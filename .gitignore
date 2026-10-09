@@ -5,4 +5,6 @@ __pycache__/
 claude-openrouter.sh
 vi_smollm_tokenizer/
 vi-smollm-135m-pretrain/
-vi-smollm-135m-sft/
+vi-smollm-135m-sft/mlflow.db
+mlruns/
+mlartifacts/
