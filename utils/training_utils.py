@@ -45,16 +45,19 @@ def get_pretrain_training_args(
 
 def get_sft_training_args(
     output_dir: str = "./vi-smollm-135m-sft",
-    learning_rate: float = 2e-5,
+    learning_rate: float = 1e-4,
     num_train_epochs: int = 3,
     per_device_train_batch_size: int = 8,
     logging_steps: int = 10,
     save_strategy: str = "epoch",
     bf16: bool = True,
-    max_length: int = 512,
+    max_length: int = 1024,
     **kwargs,
 ):
-    """Create SFTConfig for SFT stage."""
+    """Create SFTConfig for SFT stage.
+
+    With a prompt/completion dataset, TRL computes the loss on the completion only.
+    """
     return SFTConfig(
         output_dir=output_dir,
         max_length=max_length,

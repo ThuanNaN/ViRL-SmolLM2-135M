@@ -4,25 +4,41 @@ model:
   base_model: "HuggingFaceTB/SmolLM2-135M"
   vocab_size: 32000
   max_position_embeddings: 2048
+  # true = keep SmolLM2's pretrained transformer layers, re-init only the embeddings
+  # (new tokenizer). false = random init. 300-step smoke test: VTSNLP eval
+  # loss 6.57 (true) vs 7.33 (false).
+  init_from_base: true
 
 training:
   output_dir: "./vi-smollm-135m-pretrain"
   learning_rate: 5.0e-4
-  num_train_epochs: 3
+  num_train_epochs: 1            # one pass over the packed tokens (no repeated data)
+  max_steps: -1                  # -1 = derived from num_train_epochs
   per_device_train_batch_size: 8
-  per_device_eval_batch_size: 32
+  per_device_eval_batch_size: 16
   gradient_accumulation_steps: 1
   warmup_steps: 2000
-  max_steps: 80000
   lr_scheduler_type: "cosine"
   bf16: true
   logging_steps: 10
-  save_strategy: "epoch"
+  save_strategy: "steps"
+  save_steps: 5000
+  save_total_limit: 3
+  dataloader_num_workers: 2
+  ddp_timeout: 14400             # seconds; other ranks wait while rank 0 tokenizes + packs
 
 data:
   dataset_name: "uonlp/CulturaX"
   dataset_subset: "vi"
-  data_files: "vi/vi_part_0000[0-3].parquet"  # null = all shards
+  # ~560M tokens per shard -> ~5.6B tokens. vi_part_00010 is held out for eval, never train on it.
+  data_files: "vi/vi_part_0000[0-9].parquet"
   stream: false
-  max_samples: 2000000
-  max_length: 2048
+  max_samples: null              # null = every document in data_files
+  max_length: 2048               # packed block size
+  num_proc: 32                   # tokenization workers
+
+eval:
+  eval_steps: 2000               # null disables eval during training
+  vtsnlp_docs: 1000              # VTSNLP/vietnamese_curated_dataset (plan eval set)
+  culturax_heldout_file: "vi/vi_part_00010.parquet"
+  culturax_docs: 1000

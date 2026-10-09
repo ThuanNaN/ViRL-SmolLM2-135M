@@ -29,12 +29,15 @@ from utils.training_utils import (
     get_dpo_training_args,
     get_data_collator,
 )
-from utils.eval_utils import compute_perplexity, generate_sample, compute_refusal_rate
+from utils.eval_utils import generate_sample, compute_refusal_rate
 from data.dataset_loader import (
     load_culturX_vi,
     load_vi_alpaca,
     load_pkusaferlhf_vi,
+    load_pretrain_eval_texts,
     format_for_chatml,
+    filter_sft_samples,
+    pack_dataset,
 )
 
 
@@ -61,8 +64,9 @@ def get_tokenizer(model_dir: str) -> PreTrainedTokenizerFast:
 def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_from_checkpoint: str | None = None):
     """Pre-train the base Vi-SmolLM2-135M model on Vietnamese text.
 
-    Uses HuggingFace Trainer with AdamW + Cosine decay (warmup 2000, lr=5e-4).
-    Data is packed into 2048-token sequences.
+    Uses HuggingFace Trainer with AdamW + Cosine decay. Documents are tokenized,
+    joined with EOS and packed into ``max_length``-token blocks (no padding).
+    Eval loss on VTSNLP and held-out CulturaX is logged every ``eval_steps``.
     """
     config = load_config(config_path)
 
@@ -83,83 +87,91 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         base_model_name=config["model"]["base_model"],
         vocab_size=config["model"]["vocab_size"],
         max_position_embeddings=config["model"]["max_position_embeddings"],
+        init_from_base=config["model"].get("init_from_base", False),
     )
-    print(f"Model initialized with vocab_size={config['model']['vocab_size']}")
+    print(f"Model initialized with vocab_size={config['model']['vocab_size']}, "
+          f"init_from_base={config['model'].get('init_from_base', False)}")
 
     # Load tokenizer
     tokenizer = get_tokenizer("./vi_smollm_tokenizer")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = "<pad>"
 
-    # Load dataset
-    dataset = load_culturX_vi(
-        dataset_name=config["data"]["dataset_name"],
-        dataset_subset=config["data"]["dataset_subset"],
-        max_samples=config["data"]["max_samples"],
-        streaming=config["data"].get("stream", True),
-        data_files=config["data"].get("data_files"),
-    )
-    is_streaming = config["data"].get("stream", True)
-
-    # Tokenize and pack data
-    def tokenize_fn(examples):
-        return tokenizer(
-            examples["text"],
-            truncation=True,
-            max_length=config["data"]["max_length"],
-            padding="max_length",
-        )
-
-    tokenized_dataset = cast(Dataset, dataset.map(tokenize_fn, remove_columns=["text"]))
-
-    # Disable data-source shuffling for streaming datasets to avoid
-    # DataSourcesShufflingDisallowed from datasets library.
-    if is_streaming and hasattr(tokenized_dataset, "shuffle_data_sources"):
-        tokenized_dataset.shuffle_data_sources = lambda *args, **kwargs: None
-
-    tokenized_dataset = tokenized_dataset.shuffle(seed=42)
-
-    # Setup trainer
+    is_streaming = config["data"].get("stream", False)
+    if is_streaming:
+        raise ValueError("Packing needs a non-streaming dataset; set data.stream: false.")
+    train_cfg = config["training"]
+    eval_cfg = config.get("eval", {})
+    eval_steps = eval_cfg.get("eval_steps")
     training_args = get_pretrain_training_args(
-        output_dir=config["training"]["output_dir"],
-        learning_rate=config["training"]["learning_rate"],
-        num_train_epochs=config["training"]["num_train_epochs"],
-        per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
-        warmup_steps=config["training"]["warmup_steps"],
-        max_steps=config["training"]["max_steps"],
-        logging_steps=config["training"]["logging_steps"],
-        save_strategy=config["training"]["save_strategy"],
-        ignore_data_skip=is_streaming and resume_from_checkpoint is not None,
+        output_dir=train_cfg["output_dir"],
+        learning_rate=train_cfg["learning_rate"],
+        num_train_epochs=train_cfg["num_train_epochs"],
+        per_device_train_batch_size=train_cfg["per_device_train_batch_size"],
+        per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 16),
+        gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
+        warmup_steps=train_cfg["warmup_steps"],
+        max_steps=train_cfg.get("max_steps", -1),
+        logging_steps=train_cfg["logging_steps"],
+        save_strategy=train_cfg["save_strategy"],
+        save_steps=train_cfg.get("save_steps", 500),
+        save_total_limit=train_cfg.get("save_total_limit"),
+        eval_strategy="steps" if eval_steps else "no",
+        eval_steps=eval_steps,
+        dataloader_num_workers=train_cfg.get("dataloader_num_workers", 2),
+        ddp_timeout=train_cfg.get("ddp_timeout", 1800),
     )
 
-    data_collator = get_data_collator(tokenizer)
+    block_size = config["data"]["max_length"]
+    num_proc = config["data"].get("num_proc")
+    # Rank 0 tokenizes and fills the datasets cache; other ranks then load from it.
+    with training_args.main_process_first(desc="tokenize + pack"):
+        dataset = load_culturX_vi(
+            dataset_name=config["data"]["dataset_name"],
+            dataset_subset=config["data"]["dataset_subset"],
+            max_samples=config["data"].get("max_samples"),
+            streaming=False,
+            data_files=config["data"].get("data_files"),
+        )
+        train_dataset = pack_dataset(dataset, tokenizer, block_size, num_proc=num_proc).shuffle(seed=42)
+
+        eval_datasets = None
+        if eval_steps:
+            eval_texts = load_pretrain_eval_texts(
+                vtsnlp_docs=eval_cfg.get("vtsnlp_docs", 1000),
+                culturax_heldout_file=eval_cfg.get("culturax_heldout_file"),
+                culturax_docs=eval_cfg.get("culturax_docs", 1000),
+            )
+            eval_datasets = {
+                name: pack_dataset(Dataset.from_dict({"text": texts}), tokenizer, block_size)
+                for name, texts in eval_texts.items()
+            }
+
+    n_tokens = len(train_dataset) * block_size
+    print(f"[Stage 1] {len(train_dataset):,} blocks x {block_size} = {n_tokens / 1e9:.2f}B training tokens")
+    if eval_datasets:
+        print("[Stage 1] Eval blocks: " + ", ".join(f"{k}={len(v)}" for k, v in eval_datasets.items()))
 
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=tokenized_dataset,
-        data_collator=data_collator,
+        train_dataset=train_dataset,
+        eval_dataset=eval_datasets,
+        data_collator=get_data_collator(tokenizer),
         processing_class=tokenizer,
     )
 
     print("[Stage 1] Starting pre-training...")
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-    save_model(model, config["training"]["output_dir"])
-    print(f"[Stage 1] Pre-training complete. Model saved to {config['training']['output_dir']}")
+    trainer.save_model(train_cfg["output_dir"])  # weights + tokenizer, main process only
+    print(f"[Stage 1] Pre-training complete. Model saved to {train_cfg['output_dir']}")
 
-    # --- Eval: Perplexity on a sample of Vietnamese text ---
-    print("[Stage 1] Evaluating perplexity...")
-    # Use a small held-out Vietnamese text sample
-    eval_texts = [
-        "Trời đất và vũ trụ rộng lớn biết bao giờ.",
-        "Em bé đang chơi đùa trong công viên.",
-        "Việt Nam là một đất nước đẹp với nhiều danh lam thắng cảnh.",
-    ]
-    try:
-        ppl = compute_perplexity(model, tokenizer, eval_texts)
-        print(f"[Stage 1] Perplexity: {ppl:.2f}")
-    except Exception as e:
-        print(f"[Stage 1] Perplexity computation failed: {e}")
+    if eval_datasets:
+        import math
+        metrics = trainer.evaluate()
+        for name in eval_datasets:
+            loss = metrics[f"eval_{name}_loss"]
+            print(f"[Stage 1] {name}: eval loss {loss:.4f}, PPL {math.exp(loss):.2f}")
 
 
 # ============================================================================
@@ -187,26 +199,55 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
     # Set chat template
     tokenizer.chat_template = config["tokenizer"]["chat_template"]
 
-    # Load and format dataset
-    raw_dataset = load_vi_alpaca(config["data"]["dataset_name"])
-    formatted_dataset = format_for_chatml(raw_dataset, tokenizer)
+    # Load and format dataset as prompt/completion -> loss on the assistant reply only
+    data_cfg = config["data"]
+    train_cfg = config["training"]
+    system_prompt = data_cfg.get("system_prompt", "You are a helpful Vietnamese assistant.")
+    raw_dataset = load_vi_alpaca(data_cfg["dataset_name"])
+    formatted = format_for_chatml(raw_dataset, tokenizer, system_prompt=system_prompt)
+    n_raw = len(formatted)
+    formatted = filter_sft_samples(
+        formatted, tokenizer,
+        min_output_tokens=data_cfg.get("min_output_tokens", 3),
+        max_total_tokens=train_cfg["max_length"],
+    )
+    print(f"[Stage 2] Kept {len(formatted):,}/{n_raw:,} samples after filtering")
+
+    # vi-alpaca only has a train split: hold out a fixed slice for eval loss
+    # and for the test_sft notebook (saved next to the model).
+    eval_ratio = data_cfg.get("eval_ratio", 0.02)
+    split = formatted.train_test_split(test_size=eval_ratio, seed=42)
+    train_dataset, eval_dataset = split["train"], split["test"]
+    os.makedirs(train_cfg["output_dir"], exist_ok=True)
+    heldout_path = os.path.join(train_cfg["output_dir"], "heldout.jsonl")
+    eval_dataset.to_json(heldout_path, force_ascii=False)
+    print(f"[Stage 2] Train {len(train_dataset):,} / held-out {len(eval_dataset):,} -> {heldout_path}")
 
     # Setup SFTTrainer
+    eval_steps = train_cfg.get("eval_steps")
     sft_config = get_sft_training_args(
-        output_dir=config["training"]["output_dir"],
-        max_length=config["training"]["max_length"],
-        learning_rate=config["training"]["learning_rate"],
-        num_train_epochs=config["training"]["num_train_epochs"],
-        per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
-        logging_steps=config["training"]["logging_steps"],
-        save_strategy=config["training"]["save_strategy"],
-        bf16=config["training"]["bf16"],
+        output_dir=train_cfg["output_dir"],
+        max_length=train_cfg["max_length"],
+        learning_rate=train_cfg["learning_rate"],
+        num_train_epochs=train_cfg["num_train_epochs"],
+        max_steps=train_cfg.get("max_steps", -1),
+        per_device_train_batch_size=train_cfg["per_device_train_batch_size"],
+        per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 16),
+        logging_steps=train_cfg["logging_steps"],
+        save_strategy=train_cfg["save_strategy"],
+        bf16=train_cfg["bf16"],
+        warmup_steps=train_cfg.get("warmup_steps", 0.03),  # < 1 = fraction of total steps
+        lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
+        eval_strategy="steps" if eval_steps else "no",
+        eval_steps=eval_steps,
+        completion_only_loss=True,
     )
 
     trainer = SFTTrainer(
         model=model,
         args=sft_config,
-        train_dataset=formatted_dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         processing_class=tokenizer,
     )
 
@@ -215,8 +256,9 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
     # Make generate() stop at the end of an assistant turn (<|im_end|>), not only at </s>.
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
     model.generation_config.eos_token_id = [im_end_id, tokenizer.eos_token_id]
-    save_model(model, config["training"]["output_dir"])
-    print(f"[Stage 2] SFT complete. Model saved to {config['training']['output_dir']}")
+    trainer.save_model(train_cfg["output_dir"])  # weights + tokenizer (with chat template)
+    print(f"[Stage 2] SFT complete. Model saved to {train_cfg['output_dir']}")
+    print(f"[Stage 2] Held-out eval: {trainer.evaluate()}")
 
     # --- Eval: Sample generations ---
     print("[Stage 2] Evaluating generation quality...")
@@ -226,7 +268,12 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
         "Cho tôi một công thức nấu phở bò.",
     ]
     for prompt in test_prompts:
-        response = generate_sample(model, tokenizer, prompt, max_new_tokens=64)
+        chat = tokenizer.apply_chat_template(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+            tokenize=False, add_generation_prompt=True,
+        )
+        response = generate_sample(model, tokenizer, chat, max_new_tokens=128, do_sample=False,
+                                   repetition_penalty=1.1)
         print(f"  Prompt: {prompt}")
         print(f"  Response: {response}")
 

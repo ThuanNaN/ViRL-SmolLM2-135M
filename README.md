@@ -41,19 +41,39 @@ hf auth login
 uv run python data/tokenizer_train.py
 ```
 
-Trains a 32k-token Byte-Level BPE tokenizer on `uonlp/CulturaX` (vi subset), saves to `./vi_smollm_tokenizer/`.
+Trains a 32k-token Byte-Level BPE tokenizer on the first 1M docs of `uonlp/CulturaX` (vi, streamed in
+shard order = all of `vi_part_00000` + ~360k docs of `vi_part_00001`), saves to `./vi_smollm_tokenizer/`.
+
+#### Thí nghiệm: lượng dữ liệu train tokenizer
+
+Train lại tokenizer cùng cấu hình (BPE 32k, cùng special tokens) trên N docs đầu, đo token/từ trên dữ liệu
+chưa thấy (càng thấp càng tốt; "từ" = âm tiết tách theo dấu cách, 2,000 docs mỗi tập):
+
+| Dữ liệu train tokenizer | CulturaX `00010` | CulturaX `00089` | VTSNLP | Thời gian |
+|---|---:|---:|---:|---:|
+| 250k docs | 1.1973 | 1.1980 | 1.2426 | 1.0 phút |
+| **1M docs (đang dùng)** | 1.1972 | 1.1977 | 1.2426 | 3.7 phút |
+| 4M docs (~6 shard) | 1.1972 | 1.1976 | 1.2426 | 11.7 phút |
+
+Tạo lại bằng `uv run python scripts/tokenizer_data_scaling.py 250000 1000000 4000000`.
+
+- Dữ liệu ×16 chỉ giảm ~0.03% token/từ; tokenizer đã bão hoà từ ~250k docs (tiếng Việt chỉ có vài nghìn âm
+  tiết thông dụng). **Không cần train lại tokenizer** với nhiều dữ liệu hơn.
+- Không overfit shard train: token/từ trên `vi_part_00000` (1.201) bằng shard chưa thấy (1.197–1.198); 87.9%
+  từ là đúng 1 token; 30,276/32,000 token xuất hiện trong 5,000 docs chưa thấy; không có `<unk>` trên VTSNLP.
+- Muốn nén tốt hơn phải tăng vocab, nhưng với 135M tham số thì embedding to thêm mà ít được train hơn.
 
 ### 2. Pre-train Base Model (Stage 1)
 
-**2a. Pre-fetch CulturaX (vi) shards** (non-streaming, so resume can skip batches by index):
+**2a. Pre-fetch CulturaX (vi) shards** (train `vi_part_00000`–`00009`, eval `vi_part_00010`):
 
 ```bash
 # Download only the shards you need into the HF cache (skipped if already cached)
-hf download uonlp/CulturaX --repo-type dataset --include "vi/vi_part_0000[0-3].parquet"
+hf download uonlp/CulturaX --repo-type dataset --include "vi/vi_part_0000[0-9].parquet" --include "vi/vi_part_00010.parquet"
 ```
 
-`data.data_files` in `configs/pretrain_config.yaml` selects which shards are loaded (`null` = all of `vi`).
-`max_samples` caps how many rows are used. Set `stream: true` to stream instead.
+`data.data_files` in `configs/pretrain_config.yaml` selects the training shards (`null` = all 90 shards of `vi`,
+~50B tokens). `max_samples: null` uses every doc. Packing needs `stream: false`.
 
 **2b. Train**
 
@@ -66,12 +86,29 @@ uv run python finetuning/train.py --mode pretrain
 **Multi-GPU (3 GPU trên 1 máy):**
 
 ```bash
-torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain 2>&1 | tee train_pretrain.log
+NCCL_SHM_DISABLE=1 nohup uv run torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain > pretrain.log 2>&1 &
 ```
 
-AdamW + Cosine decay, lr=5e-4, warmup 2000 steps, `max_steps=80000` (stops before `num_train_epochs`),
-batch=8/GPU (global batch 24 on 3 GPUs), sequences padded/truncated to 2048 tokens.
-Output: `./vi-smollm-135m-pretrain/` (checkpoints `checkpoint-*` + final model). Gradients sync via NCCL.
+`NCCL_SHM_DISABLE=1`: trên máy này GPU2 nằm ở CPU socket khác, NCCL từng lỗi
+`Error while attaching to shared memory segment`. Bỏ biến này nếu máy không gặp lỗi đó.
+
+Cấu hình hiện tại (`configs/pretrain_config.yaml`):
+
+- **Packing**: mỗi doc được tokenize, nối `</s>`, ghép liền nhau rồi cắt thành block 2048 token, không padding.
+- **Dữ liệu**: shard `vi_part_00000`–`00009` (~6.4M docs, ước tính ~5.6B token), **1 epoch** (`max_steps: -1`,
+  số step tự tính). Token đã tokenize lưu int32 trong HF datasets cache (~50 GB).
+- **Init**: `init_from_base: true` giữ các lớp transformer của SmolLM2-135M, chỉ khởi tạo lại embedding (tied
+  với `lm_head`) vì tokenizer mới. `false` = random init.
+- **Eval** mỗi 2,000 step: `eval_vtsnlp_loss` (1,000 docs đầu `VTSNLP/vietnamese_curated_dataset`) và
+  `eval_culturax_heldout_loss` (1,000 docs đầu `vi_part_00010`), cũng đã pack 2048.
+- AdamW + cosine, lr=5e-4, warmup 2,000 steps, batch 8/GPU (global 24 trên 3 GPU), bf16.
+- Checkpoint mỗi 5,000 step, giữ 3 bản (`save_total_limit`). `ddp_timeout: 14400` vì rank 0 tokenize + pack
+  trong khi các rank khác chờ.
+- Output: `./vi-smollm-135m-pretrain/` (model + tokenizer).
+
+> **Xoá checkpoint cũ trước khi train lại vào cùng thư mục.** `save_total_limit` giữ checkpoint có số step lớn
+> nhất, nên `checkpoint-80000` cũ sẽ được giữ còn checkpoint mới bị xoá:
+> `rm -rf vi-smollm-135m-pretrain/checkpoint-*`.
 
 > **Multi-GPU phải dùng `torchrun`.** Chạy `uv run python ...` với nhiều GPU hiển thị sẽ rơi vào
 > `nn.DataParallel` và crash với CUDA `nll_loss` assert (`t >= 0 && t < n_classes`).
@@ -81,12 +118,13 @@ Output: `./vi-smollm-135m-pretrain/` (checkpoints `checkpoint-*` + final model).
 
 ```bash
 torchrun --nproc_per_node=3 finetuning/train.py --mode pretrain \
-  --resume ./vi-smollm-135m-pretrain/checkpoint-41667 2>&1 | tee train_resume.log
+  --resume ./vi-smollm-135m-pretrain/checkpoint-<step> 2>&1 | tee train_resume.log
 ```
 
-#### Pre-training results
+#### Pre-training results — run 1 (cấu hình cũ)
 
-Run thực tế: 80,000 steps trên 4 shard CulturaX (2M docs, ~0.96 epoch), run bị dừng ở step 41,667 và được resume.
+Kết quả dưới đây là **run đầu tiên** với cấu hình cũ: random init, 4 shard (`vi_part_00000`–`00003`, 2M docs),
+mỗi doc pad/cắt riêng về 2048 token, `max_steps=80000` (~0.96 epoch). Run bị dừng ở step 41,667 và được resume.
 
 ![Pre-training loss and LR schedule](docs/assets/pretrain_loss.png)
 
@@ -111,10 +149,29 @@ Loss giảm rất nhanh trong ~5k step đầu rồi gần như phẳng (3.12 →
 | checkpoint-41667 | 56.2 | 20.9 | 67% |
 | checkpoint-80000 | **54.8** | **20.4** | 67% |
 
-- `VTSNLP` = `VTSNLP/vietnamese_curated_dataset`, eval set của Stage 1 theo plan; held-out CulturaX = shard `vi_part_00004` (không dùng khi train).
+- `VTSNLP` = `VTSNLP/vietnamese_curated_dataset`, eval set của Stage 1 theo plan; held-out CulturaX của run 1 = shard `vi_part_00004` (notebook giờ dùng `vi_part_00010` vì `00004` nằm trong dữ liệu train mới).
 - PPL trên VTSNLP (54.8) còn xa mục tiêu `< 15` trong `docs/stage1_pretrain.md`. Model chỉ train trên CulturaX (web crawl) nên có domain shift; PPL held-out CulturaX là 20.4.
 - Đây là base model: sinh văn bản tiếng Việt trôi chảy nhưng hay lặp và chưa trả lời được câu hỏi / chưa nắm chắc fact (đúng "Hà Nội", sai "thành phố lớn nhất"). Cải thiện sau SFT (Stage 2).
 - Loss/PPL hầu như phẳng ở nửa sau, nên train thêm cùng dữ liệu ít giá trị; cần thêm dữ liệu nếu muốn PPL thấp hơn.
+
+#### Phân tích run 1 và các thay đổi
+
+| Vấn đề ở run 1 | Số đo | Thay đổi |
+|---|---|---|
+| Padding chiếm phần lớn compute | Doc CulturaX trung bình 875 token (median 604); chỉ **37.8%** mỗi block 2048 là token thật; 8.9% doc bị cắt đuôi (3,000 docs của `vi_part_00000`) | Packing, không padding: ~2.6× token thật trên cùng compute |
+| Quá ít token cho model train từ đầu | 1.92M chuỗi × ~775 token thật ≈ **1.5B token** (Chinchilla cho 135M ≈ 2.7B) | 10 shard, 1 epoch ≈ 5.6B token |
+| Random init | — | Init từ SmolLM2-135M (xem bảng dưới) |
+| Không có eval trong lúc train | — | Eval loss VTSNLP + CulturaX `00010` mỗi 2,000 step |
+
+Smoke test 300 step trên 1 GPU (20k docs, warmup 50, cùng các thay đổi trên), eval loss ở step 300:
+
+| Init | VTSNLP loss | CulturaX `00010` loss |
+|---|---:|---:|
+| Random (`init_from_base: false`) | 7.33 | 6.85 |
+| SmolLM2-135M (`init_from_base: true`) | **6.57** | **6.20** |
+
+Init từ SmolLM2 thấp hơn ~0.7 loss ngay từ đầu; đây mới là lợi thế giai đoạn đầu, chưa chắc còn đến cuối run.
+Tốc độ đo được: ~1.8–1.9 it/s × 8 × 2048 ≈ 29k token/s trên 1 GPU A5000.
 
 ### 3. Supervised Fine-Tuning (Stage 2)
 
@@ -130,13 +187,20 @@ uv run python finetuning/train.py --mode sft
 torchrun --nproc_per_node=3 finetuning/train.py --mode sft 2>&1 | tee train_sft.log
 ```
 
-ChatML-formatted vi-alpaca data (all 50,006 samples), lr=2e-5, 3 epochs, batch 8, linear LR decay.
-Base model: `./vi-smollm-135m-pretrain` (final 80k-step model). Output: `./vi-smollm-135m-sft/`.
-Dùng 1 GPU (`CUDA_VISIBLE_DEVICES=0`) là đủ cho 135M + 50k mẫu.
+Cấu hình hiện tại (`configs/sft_config.yaml`):
 
-#### SFT results
+- **Prompt/completion**: mỗi mẫu là `prompt = [system, user]`, `completion = [assistant]` (ChatML). TRL chỉ tính
+  loss trên câu trả lời (gồm `<|im_end|>`), không học lại system/user. `instruction` và `input` gộp vào 1 lượt user.
+- **Lọc**: bỏ mẫu có output < 3 token hoặc tổng > 1,024 token → giữ 49,372/50,006.
+- **Held-out**: tách 2% (988 mẫu, seed 42), eval loss mỗi 500 step, lưu ở `vi-smollm-135m-sft/heldout.jsonl`.
+- lr=1e-4, cosine, warmup 3%, 3 epochs, batch 8, `max_length` 1,024.
+- Base: `./vi-smollm-135m-pretrain`. Output: `./vi-smollm-135m-sft/` (model + tokenizer, `generation_config`
+  dừng ở `<|im_end|>`). Dùng 1 GPU (`CUDA_VISIBLE_DEVICES=0`) là đủ cho 135M + 50k mẫu.
 
-Run thực tế: 18,753 steps (3 epochs), ~79 phút trên 1 GPU, ~36M token.
+#### SFT results — run 1 (cấu hình cũ)
+
+Cấu hình cũ: loss trên toàn bộ chuỗi (cả system/user), lr=2e-5 linear, 50,006 mẫu, không held-out; base là
+model pretrain run 1. Run thực tế: 18,753 steps (3 epochs), ~79 phút trên 1 GPU, ~36M token.
 
 ![SFT loss and LR schedule](docs/assets/sft_loss.png)
 
@@ -153,7 +217,8 @@ Loss giảm 3.47 → 2.16 (token accuracy 0.44 → 0.57) và đã phẳng từ k
 | Fact đúng (từ khoá) | 1/10 | 0/10 |
 
 - SFT dạy được **format** (trả lời rồi dừng, ít lặp) nhưng **chưa dạy được kiến thức**: cả 10 câu fact đều sai (ví dụ "Thủ đô của Việt Nam là gì?" không ra Hà Nội). Nút thắt là chất lượng pretrain (PPL ~55 trên VTSNLP).
-- **Không có held-out thật cho Stage 2**: `vi-alpaca` chỉ có split `train` và `run_sft` train trên toàn bộ. 30 prompt trong notebook là viết tay và nhỏ (CI rộng), chỉ nên xem là so sánh tương đối với base. Muốn eval chính thức cần tách ~500 mẫu và train lại.
+- **Run 1 không có held-out**: `vi-alpaca` chỉ có split `train` và run 1 train trên toàn bộ. 30 prompt trong notebook là viết tay và nhỏ (CI rộng), chỉ nên xem là so sánh tương đối với base. Cấu hình hiện tại đã tách 2% held-out.
+- Loss trên cả prompt và lr thấp góp phần vào việc model lặp lại prompt và chỉ dừng đúng 50%; cấu hình hiện tại sửa cả hai.
 - Model SFT lưu trước bản sửa chỉ có `eos_token_id=[2, 0]` (không có `<|im_end|>`); `generate_sample` trong `utils/eval_utils.py` tự dừng ở `<|im_end|>`, và `run_sft` giờ lưu đúng stop token cho lần train sau. Khi tự gọi `model.generate()` với model cũ, hãy truyền `eos_token_id=[2, 6]`.
 
 ### 4. DPO Safety Alignment (Stage 3)
@@ -172,6 +237,9 @@ torchrun --nproc_per_node=3 finetuning/train.py --mode dpo 2>&1 | tee train_dpo.
 
 PKU-SafeRLHF-VI, lr=5e-7, beta=0.1, 2 epochs. Output: `./vi-smollm-135m-censored/`.
 
+> **Chưa chạy được:** `1997AOF/PKU-SafeRLHF-VI` trả về `DatasetNotFoundError` dù đã đăng nhập, và tìm trên Hub
+> không thấy (có thể đã private/xoá). Cần thay dataset (ví dụ dịch `PKU-Alignment/PKU-SafeRLHF`) trước Stage 3.
+
 ### 5. Abliteration — Remove Censorship (Stage 4)
 
 ```bash
@@ -189,18 +257,22 @@ abc-to-cba/
 │   └── remove_censorship.py         # Stage 4: weight orthogonalization
 ├── configs/
 │   ├── __init__.py
-│   ├── pretrain_config.yaml         # Stage 1: lr=5e-4, batch=32, cosine
-│   ├── sft_config.yaml              # Stage 2: lr=2e-5, batch=8, ChatML
+│   ├── pretrain_config.yaml         # Stage 1: lr=5e-4, batch=8/GPU, cosine, packing 2048
+│   ├── sft_config.yaml              # Stage 2: lr=1e-4, batch=8, ChatML prompt/completion
 │   └── dpo_config.yaml              # Stage 3: lr=5e-7, beta=0.1
 ├── data/
 │   ├── __init__.py                  # Exports: all loaders + train_byte_level_bpe
-│   ├── dataset_loader.py            # load_culturX_vi, load_vi_alpaca, load_pkusaferlhf_vi, load_abliteration_data, format_for_chatml
+│   ├── dataset_loader.py            # load_culturX_vi, load_vi_alpaca, load_pkusaferlhf_vi, load_abliteration_data, format_for_chatml,
+│   │                                #   filter_sft_samples, pack_dataset, load_pretrain_eval_texts
 │   ├── tokenizer_train.py           # Byte-Level BPE tokenizer training
 │   ├── harmful_prompts_vi.json      # 200 harmful prompts (Stage 4)
 │   └── harmless_prompts_vi.json     # 200 harmless prompts (Stage 4)
 ├── finetuning/
 │   ├── __init__.py                  # Exports: run_pretrain, run_sft, run_dpo
 │   └── train.py                     # Unified entry: --mode pretrain|sft|dpo
+├── scripts/
+│   ├── plot_loss.py                 # Loss/LR figure from trainer_state.json
+│   └── tokenizer_data_scaling.py    # Tokenizer data-scaling experiment
 ├── utils/
 │   ├── __init__.py                  # Exports: create_model, load_model, save_model, training args + collator, eval utils
 │   ├── model_utils.py               # create_model, load_model, save_model
@@ -258,14 +330,26 @@ All modes accept `--mode pretrain|sft|dpo` and optional `--config` path.
 | `orthogonalize_weight()` | Removes refusal direction component from a weight matrix |
 | `run_abliteration()` | Full pipeline: extract → compute direction → orthogonalize → save |
 
+## Dữ liệu train / eval theo stage
+
+| Stage | Train | Eval |
+|---|---|---|
+| 0. Tokenizer | CulturaX `vi`, 1M docs đầu (`vi_part_00000` + ~360k docs `vi_part_00001`) | `scripts/tokenizer_data_scaling.py`: token/từ trên CulturaX `00010`, `00089`, VTSNLP |
+| 1. Pretrain | CulturaX `vi_part_00000`–`00009` | Trong lúc train: 1,000 docs VTSNLP + 1,000 docs CulturaX `vi_part_00010`; notebook: 300 docs mỗi tập |
+| 2. SFT | `bkai-foundation-models/vi-alpaca`, 98% sau lọc (48,384) | 2% held-out (988, `heldout.jsonl`); notebook: 30 prompt viết tay |
+| 3. DPO | `1997AOF/PKU-SafeRLHF-VI` (hiện không truy cập được) | `data/harmful_prompts_vi.json`, tỷ lệ từ chối theo từ khoá |
+| 4. Abliteration | `data/harmful_prompts_vi.json` + `harmless_prompts_vi.json` (200 mỗi file) để tính refusal direction | Cùng hai file đó (chưa tách; kết quả sẽ lạc quan) |
+
+Tokenizer và pretrain không dùng VTSNLP hay `vi_part_00010`, nên eval Stage 1 là dữ liệu chưa thấy.
+
 ## Configuration Files
 
 All stage parameters live in `configs/*.yaml`:
 
 | File | Key Parameters |
 |------|---------------|
-| `pretrain_config.yaml` | `base_model: HuggingFaceTB/SmolLM2-135M`, lr=5e-4, cosine, 3 epochs |
-| `sft_config.yaml` | `base_model: ./vi-smollm-135m-pretrain`, lr=2e-5, ChatML template |
+| `pretrain_config.yaml` | `base_model: HuggingFaceTB/SmolLM2-135M`, `init_from_base: true`, shard 0–9, packing 2048, lr=5e-4, cosine, 1 epoch, eval mỗi 2,000 step |
+| `sft_config.yaml` | `base_model: ./vi-smollm-135m-pretrain`, prompt/completion, lr=1e-4, cosine, 2% held-out, ChatML template |
 | `dpo_config.yaml` | `base_model: ./vi-smollm-135m-sft`, lr=5e-7, beta=0.1 |
 
 ## Evaluation Matrix
