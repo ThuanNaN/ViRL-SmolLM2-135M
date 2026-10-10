@@ -8,3 +8,4 @@ vi-smollm-135m-pretrain/
 vi-smollm-135m-sft/mlflow.db
 mlruns/
 mlartifacts/
+mlflow.db
