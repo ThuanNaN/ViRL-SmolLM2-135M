@@ -9,3 +9,4 @@ vi-smollm-135m-sft/mlflow.db
 mlruns/
 mlartifacts/
 mlflow.db
+TODO.md
