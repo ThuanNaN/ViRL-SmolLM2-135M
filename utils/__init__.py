@@ -6,6 +6,8 @@ from utils.training_utils import (
     get_sft_training_args,
     get_dpo_training_args,
     get_data_collator,
+    get_early_stopping_callbacks,
+    LossSpikeCallback,
 )
 from utils.eval_utils import (
     compute_perplexity,
@@ -23,6 +25,8 @@ __all__ = [
     "get_sft_training_args",
     "get_dpo_training_args",
     "get_data_collator",
+    "get_early_stopping_callbacks",
+    "LossSpikeCallback",
     "compute_perplexity",
     "generate_sample",
     "compute_refusal_rate",

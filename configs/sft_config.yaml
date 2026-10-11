@@ -14,7 +14,10 @@ training:
   max_length: 1024               # samples longer than this are dropped, not truncated
   logging_steps: 10
   eval_steps: 500
-  save_strategy: "epoch"
+  save_strategy: "steps"
+  save_steps: 500                # must be a multiple of eval_steps (load_best_model_at_end)
+  save_total_limit: 3
+  load_best_model_at_end: true   # final model = lowest held-out eval_loss
   bf16: true
 
 data:
@@ -22,6 +25,13 @@ data:
   system_prompt: "You are a helpful Vietnamese assistant."
   min_output_tokens: 3           # drop empty / near-empty replies
   eval_ratio: 0.02               # held-out slice (vi-alpaca has only a train split)
+
+early_stopping:
+  patience: 3                    # stop after 3 evals (1.5k steps) without a better eval_loss
+  threshold: 0.0
+  loss_spike_threshold: 0.5
+  loss_spike_patience: 20
+  loss_spike_warmup: 200
 
 tokenizer:
   chat_template: "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{'<|im_start|>assistant\n'}}{% endif %}"

@@ -22,6 +22,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+import torch
 import yaml
 from typing import cast
 from transformers import PreTrainedTokenizerFast, Trainer
@@ -32,6 +33,7 @@ from utils.training_utils import (
     get_sft_training_args,
     get_dpo_training_args,
     get_data_collator,
+    get_early_stopping_callbacks,
 )
 from utils.eval_utils import generate_sample, compute_refusal_rate
 from data.dataset_loader import (
@@ -92,6 +94,16 @@ def tracking_run(trainer):
         yield mlflow
 
 
+def save_final_model(trainer, output_dir: str):
+    """Save the final model in bf16 (weights + tokenizer, main process only).
+
+    Training keeps fp32 master weights (see ``create_model``); the published
+    model and the next stage's input stay bf16 like the SmolLM2 base.
+    """
+    trainer.model.to(torch.bfloat16)
+    trainer.save_model(output_dir)
+
+
 def get_tokenizer(model_dir: str) -> PreTrainedTokenizerFast:
     """Load a PreTrainedTokenizerFast from the specified directory."""
     # save_model() stores only the weights, so a model dir may have no tokenizer files.
@@ -118,7 +130,6 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
     # Without torchrun, HF Trainer falls back to nn.DataParallel when several
     # GPUs are visible, which crashes here with a CUDA nll_loss assert
     # (`t >= 0 && t < n_classes`). Single GPU or torchrun both work.
-    import torch
     if torch.cuda.device_count() > 1 and int(os.environ.get("WORLD_SIZE", "1")) == 1:
         raise RuntimeError(
             f"{torch.cuda.device_count()} GPUs visible but not launched with torchrun. "
@@ -163,6 +174,12 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         save_total_limit=train_cfg.get("save_total_limit"),
         eval_strategy="steps" if eval_steps else "no",
         eval_steps=eval_steps,
+        weight_decay=train_cfg.get("weight_decay", 0.0),
+        adam_beta2=train_cfg.get("adam_beta2", 0.999),
+        max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
+        load_best_model_at_end=bool(eval_steps) and train_cfg.get("load_best_model_at_end", False),
+        metric_for_best_model=train_cfg.get("metric_for_best_model"),
+        greater_is_better=False,
         dataloader_num_workers=train_cfg.get("dataloader_num_workers", 2),
         ddp_timeout=train_cfg.get("ddp_timeout", 1800),
         **get_tracking_args(config, config_path, "pretrain"),
@@ -205,11 +222,12 @@ def run_pretrain(config_path: str = "text/configs/pretrain_config.yaml", resume_
         eval_dataset=eval_datasets,
         data_collator=get_data_collator(tokenizer),
         processing_class=tokenizer,
+        callbacks=get_early_stopping_callbacks(config.get("early_stopping")),
     )
 
     print("[Stage 1] Starting pre-training...")
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-    trainer.save_model(train_cfg["output_dir"])  # weights + tokenizer, main process only
+    save_final_model(trainer, train_cfg["output_dir"])
     print(f"[Stage 1] Pre-training complete. Model saved to {train_cfg['output_dir']}")
 
     if eval_datasets:
@@ -289,6 +307,11 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         eval_strategy="steps" if eval_steps else "no",
         eval_steps=eval_steps,
+        save_steps=train_cfg.get("save_steps", 500),
+        save_total_limit=train_cfg.get("save_total_limit"),
+        load_best_model_at_end=bool(eval_steps) and train_cfg.get("load_best_model_at_end", False),
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
         completion_only_loss=True,
         **get_tracking_args(config, config_path, "sft"),
     )
@@ -299,6 +322,7 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
+        callbacks=get_early_stopping_callbacks(config.get("early_stopping")),
     )
 
     print("[Stage 2] Starting SFT...")
@@ -306,7 +330,7 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
     # Make generate() stop at the end of an assistant turn (<|im_end|>), not only at </s>.
     im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
     model.generation_config.eos_token_id = [im_end_id, tokenizer.eos_token_id]
-    trainer.save_model(train_cfg["output_dir"])  # weights + tokenizer (with chat template)
+    save_final_model(trainer, train_cfg["output_dir"])  # + tokenizer with chat template
     print(f"[Stage 2] SFT complete. Model saved to {train_cfg['output_dir']}")
     with tracking_run(trainer) as mlflow:
         metrics = trainer.evaluate()

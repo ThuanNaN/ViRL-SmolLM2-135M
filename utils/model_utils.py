@@ -1,5 +1,6 @@
 """Model initialization utilities for Vi-SmolLM2-135M."""
 
+import torch
 from transformers import AutoConfig, AutoModelForCausalLM
 
 
@@ -21,15 +22,19 @@ def create_model(
             vocabulary. If False, all weights are random.
 
     Returns:
-        AutoModelForCausalLM: Initialized model.
+        AutoModelForCausalLM: Initialized model with fp32 weights. The SmolLM2
+        config says ``dtype: bfloat16`` and transformers 5 follows it, which would
+        make the optimizer update bf16 master weights (small updates round away;
+        run 2 diverged and then stalled). Trainer's ``bf16=True`` still computes
+        in bf16 via autocast.
     """
     if not init_from_base:
         config = AutoConfig.from_pretrained(base_model_name)
         config.vocab_size = vocab_size
         config.max_position_embeddings = max_position_embeddings
-        return AutoModelForCausalLM.from_config(config)
+        return AutoModelForCausalLM.from_config(config, dtype=torch.float32)
 
-    model = AutoModelForCausalLM.from_pretrained(base_model_name)
+    model = AutoModelForCausalLM.from_pretrained(base_model_name, dtype=torch.float32)
     old_std = model.get_input_embeddings().weight.std().item()
     model.resize_token_embeddings(vocab_size, mean_resizing=False)
     # Fresh embeddings at the base embedding scale; lm_head is tied to them.
@@ -38,16 +43,18 @@ def create_model(
     return model
 
 
-def load_model(model_path: str):
+def load_model(model_path: str, dtype: torch.dtype = torch.float32):
     """Load a saved model from disk.
 
     Args:
         model_path: Path to the saved model directory.
+        dtype: Weight dtype. fp32 by default so training keeps fp32 master
+            weights even though checkpoints are saved as bf16.
 
     Returns:
         AutoModelForCausalLM: Loaded model.
     """
-    return AutoModelForCausalLM.from_pretrained(model_path)
+    return AutoModelForCausalLM.from_pretrained(model_path, dtype=dtype)
 
 
 def save_model(model, model_path: str):

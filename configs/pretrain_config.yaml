@@ -14,16 +14,21 @@ training:
   learning_rate: 5.0e-4
   num_train_epochs: 1            # one pass over the packed tokens (no repeated data)
   max_steps: -1                  # -1 = derived from num_train_epochs
-  per_device_train_batch_size: 8
+  per_device_train_batch_size: 4  # fp32 master weights: bs 8 peaks at 23.1 GB (OOM on 24 GB), bs 4 at 12.5 GB
   per_device_eval_batch_size: 16
-  gradient_accumulation_steps: 1
-  warmup_steps: 2000
+  gradient_accumulation_steps: 8  # global batch = 4 x n_gpu x 8 (64 seqs ~131k tokens on 2 GPU)
+  warmup_steps: 1000
+  weight_decay: 0.1
+  adam_beta2: 0.95               # 0.999 + small batch spiked; 0.95 is the usual LLM setting
+  max_grad_norm: 1.0
   lr_scheduler_type: "cosine"
   bf16: true
   logging_steps: 10
   save_strategy: "steps"
-  save_steps: 5000
-  save_total_limit: 3
+  save_steps: 1000               # must be a multiple of eval.eval_steps (load_best_model_at_end)
+  save_total_limit: 3            # the best checkpoint is always kept on top of this
+  load_best_model_at_end: true   # final model = best eval checkpoint, not the last one
+  metric_for_best_model: "eval_vtsnlp_loss"
   dataloader_num_workers: 2
   ddp_timeout: 14400             # seconds; other ranks wait while rank 0 tokenizes + packs
 
@@ -38,10 +43,17 @@ data:
   num_proc: 32                   # tokenization workers
 
 eval:
-  eval_steps: 2000               # null disables eval during training
+  eval_steps: 1000               # null disables eval during training
   vtsnlp_docs: 1000              # VTSNLP/vietnamese_curated_dataset (plan eval set)
   culturax_heldout_file: "vi/vi_part_00010.parquet"
   culturax_docs: 1000
+
+early_stopping:
+  patience: 5                    # stop after 5 evals (5k steps) without a better eval_vtsnlp_loss
+  threshold: 0.0
+  loss_spike_threshold: 0.5      # stop if train-loss EMA stays 0.5 above its best ...
+  loss_spike_patience: 20        # ... for 20 logs (200 steps)
+  loss_spike_warmup: 1000        # ignore the warmup phase
 
 tracking:
   report_to: "mlflow"             # "none" to disable

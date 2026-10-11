@@ -119,12 +119,20 @@ Cấu hình hiện tại (`configs/pretrain_config.yaml`):
   số step tự tính). Token đã tokenize lưu int32 trong HF datasets cache (~50 GB).
 - **Init**: `init_from_base: true` giữ các lớp transformer của SmolLM2-135M, chỉ khởi tạo lại embedding (tied
   với `lm_head`) vì tokenizer mới. `false` = random init.
-- **Eval** mỗi 2,000 step: `eval_vtsnlp_loss` (1,000 docs đầu `VTSNLP/vietnamese_curated_dataset`) và
+- **Eval** mỗi 1,000 step: `eval_vtsnlp_loss` (1,000 docs đầu `VTSNLP/vietnamese_curated_dataset`) và
   `eval_culturax_heldout_loss` (1,000 docs đầu `vi_part_00010`), cũng đã pack 2048.
-- AdamW + cosine, lr=5e-4, warmup 2,000 steps, batch 8/GPU (global 24 trên 3 GPU), bf16.
-- Checkpoint mỗi 5,000 step, giữ 3 bản (`save_total_limit`). `ddp_timeout: 14400` vì rank 0 tokenize + pack
-  trong khi các rank khác chờ.
-- Output: `./vi-smollm-135m-pretrain/` (model + tokenizer).
+- **Mixed precision**: trọng số gốc (master weights) fp32, tính toán bf16 (`bf16=True` autocast); model cuối lưu
+  bf16. transformers 5 đọc `dtype: bfloat16` trong config SmolLM2 nên trước đây optimizer cập nhật thẳng trọng
+  số bf16 (xem run 2).
+- AdamW (`adam_beta2: 0.95`, `weight_decay: 0.1`, `max_grad_norm: 1.0`) + cosine, lr=5e-4, warmup 1,000 steps.
+- Batch 4/GPU × grad accumulation 8 = 64 chuỗi (~131k token) mỗi step trên 2 GPU. Batch 8/GPU với trọng số
+  fp32 cần 23.1 GB (OOM trên A5000 24 GB), batch 4 cần 12.5 GB.
+- Checkpoint mỗi 1,000 step (cùng nhịp eval), giữ 3 bản + bản tốt nhất; `load_best_model_at_end` theo
+  `eval_vtsnlp_loss`, nên model cuối là checkpoint có VTSNLP loss thấp nhất.
+- **Dừng sớm**: (1) `eval_vtsnlp_loss` không cải thiện sau 5 lần eval; (2) EMA của train loss cao hơn mức tốt
+  nhất 0.5 trong 20 lần log liên tiếp (~200 step), tức là bị phân kỳ. Cấu hình ở block `early_stopping`.
+- `ddp_timeout: 14400` vì rank 0 tokenize + pack trong khi các rank khác chờ.
+- Output: `./vi-smollm-135m-pretrain/` (model bf16 + tokenizer).
 
 > **Xoá checkpoint cũ trước khi train lại vào cùng thư mục.** `save_total_limit` giữ checkpoint có số step lớn
 > nhất, nên `checkpoint-80000` cũ sẽ được giữ còn checkpoint mới bị xoá:
@@ -174,6 +182,28 @@ Loss giảm rất nhanh trong ~5k step đầu rồi gần như phẳng (3.12 →
 - Đây là base model: sinh văn bản tiếng Việt trôi chảy nhưng hay lặp và chưa trả lời được câu hỏi / chưa nắm chắc fact (đúng "Hà Nội", sai "thành phố lớn nhất"). Cải thiện sau SFT (Stage 2).
 - Loss/PPL hầu như phẳng ở nửa sau, nên train thêm cùng dữ liệu ít giá trị; cần thêm dữ liệu nếu muốn PPL thấp hơn.
 
+#### Pre-training results — run 2 (phân kỳ)
+
+Run 2: packing, 10 shard (5.9B token, 2,880,441 block), init từ SmolLM2, 2 GPU × batch 8 (32k token/step),
+lr 5e-4, `adam_beta2` 0.999, không weight decay, **trọng số bf16**. 180,028 step trong 27.8 giờ (MLflow run
+`pretrain-20261009-2350`).
+
+| Step | Train loss | VTSNLP eval loss | CulturaX `00010` eval loss |
+|---|---:|---:|---:|
+| 2,000 | 4.74 | 5.08 | 4.70 |
+| 8,000 | 3.97 | **4.33** | — |
+| 10,300 | 6.90 (grad_norm 42) | — | — |
+| 12,000 | 7.13 | 7.51 | — |
+| 80,000 | 5.82 | 6.53 | 5.81 |
+| 180,028 | 5.94 | 6.61 (PPL 746) | 5.87 (PPL 355) |
+
+- Học tốt đến step ~8k rồi **phân kỳ** ở step ~10.2k (loss 4.1 → 7.5 trong ~300 step) và không hồi phục.
+- Sau đó loss đứng ở ~5.9 từ step 75k đến 180k dù lr giảm về 0: các cập nhật nhỏ bị làm tròn mất vì trọng số
+  bf16. Có lẽ đây cũng là lý do run 1 phẳng ở nửa sau.
+- Checkpoint tốt nhất (~step 8k) đã bị xoá do `save_total_limit` chỉ giữ checkpoint mới nhất.
+- Đã sửa: trọng số fp32, `adam_beta2` 0.95, weight decay 0.1, batch ×4 (grad accumulation), `load_best_model_at_end`,
+  dừng sớm khi eval loss không cải thiện hoặc train loss phân kỳ.
+
 #### Phân tích run 1 và các thay đổi
 
 | Vấn đề ở run 1 | Số đo | Thay đổi |
@@ -213,7 +243,9 @@ Cấu hình hiện tại (`configs/sft_config.yaml`):
   loss trên câu trả lời (gồm `<|im_end|>`), không học lại system/user. `instruction` và `input` gộp vào 1 lượt user.
 - **Lọc**: bỏ mẫu có output < 3 token hoặc tổng > 1,024 token → giữ 49,372/50,006.
 - **Held-out**: tách 2% (988 mẫu, seed 42), eval loss mỗi 500 step, lưu ở `vi-smollm-135m-sft/heldout.jsonl`.
-- lr=1e-4, cosine, warmup 3%, 3 epochs, batch 8, `max_length` 1,024.
+- lr=1e-4, cosine, warmup 3%, 3 epochs, batch 8, `max_length` 1,024. Trọng số fp32 khi train, lưu bf16.
+- Checkpoint mỗi 500 step, model cuối là checkpoint có held-out `eval_loss` thấp nhất; dừng sớm sau 3 lần eval
+  không cải thiện hoặc khi train loss phân kỳ.
 - Base: `./vi-smollm-135m-pretrain`. Output: `./vi-smollm-135m-sft/` (model + tokenizer, `generation_config`
   dừng ở `<|im_end|>`). Dùng 1 GPU (`CUDA_VISIBLE_DEVICES=0`) là đủ cho 135M + 50k mẫu.
 
