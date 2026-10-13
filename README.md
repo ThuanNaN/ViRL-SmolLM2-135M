@@ -305,11 +305,23 @@ Cấu hình (`configs/dpo_config.yaml`):
 
 - **Format hội thoại:** `prompt=[system, user]`, `chosen/rejected=[assistant]`, cùng system prompt và ChatML với SFT. TRL tự áp chat template và chỉ tính log-prob trên câu trả lời. (Bản cũ tokenize thô, pad tới 2048, không có template.)
 - **Reference model:** bản copy đóng băng của model SFT.
-- lr 1e-6, cosine, warmup 10%, beta 0.1, batch 8 × accum 4 = 32 cặp/step, 2 epoch, `max_length` 1024.
+- **Loss DPO + SFT** (`loss_type: ["sigmoid", "sft"]`, kiểu RPO): thêm NLL trên câu chosen để model học *tạo ra* câu từ chối, vì model SFT gần như chưa bao giờ từ chối.
+- `refusal_only: true`: 2,029 cặp an toàn có chosen là từ chối + 2,454 cặp vô hại (4,483 train / 592 test).
+- lr 5e-6, cosine, warmup 10%, beta 0.1, batch 8 × accum 4 = 32 cặp/step, 3 epoch (~420 step), `max_length` 1024.
 - Eval DPO loss / reward accuracy trên split test mỗi 50 step, giữ checkpoint có eval loss thấp nhất, early stopping sau 4 lần eval không cải thiện.
 - Đo **tỷ lệ từ chối trước và sau DPO** trên 100 prompt độc hại và 100 prompt vô hại (ChatML, greedy, 96 token), log vào MLflow (`refusal_harmful_before/after`, `refusal_benign_before/after`). Bộ phát hiện từ chối là so khớp từ khoá (`utils/eval_utils.py`), khá rộng nên chỉ dùng để so sánh tương đối.
 
 Output: `./vi-smollm-135m-censored/`.
+
+#### DPO results — run 1 (DPO thuần, lr 1e-6, toàn bộ 9,816 cặp)
+
+| | Trước (SFT) | Sau DPO |
+|---|---|---|
+| Tỷ lệ từ chối, 100 prompt độc hại | 2% | 6% |
+| Tỷ lệ từ chối, 100 prompt vô hại | 4% | 8% |
+| Eval loss / reward acc / margin | 0.693 / 51% / 0 | 0.593 / 73% / 0.25 |
+
+Loss giảm nhưng hành vi gần như không đổi (±5 điểm là nhiễu với 100 prompt). `rewards/chosen` đứng yên ~0, chỉ `rewards/rejected` giảm: DPO chỉ học *tránh* câu độc hại chứ không học *từ chối*, vì model SFT gần như không bao giờ sinh câu từ chối và chỉ 28% chosen là từ chối. Cấu hình hiện tại (DPO + SFT loss, `refusal_only`, lr 5e-6, 3 epoch) sửa các điểm này.
 
 ### 5. Abliteration — Remove Censorship (Stage 4)
 
