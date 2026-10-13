@@ -107,7 +107,7 @@ def load_dpo_safety_vi(
     data_dir: str = "./data/dpo_safety_vi",
     system_prompt: str = "You are a helpful Vietnamese assistant.",
     refusal_only: bool = False,
-    short_pairs: bool = False,
+    extra_sets: list[str] | None = None,
 ) -> DatasetDict:
     """Load the Vietnamese DPO safety set built by ``scripts/build_dpo_safety_vi.py``.
 
@@ -122,9 +122,10 @@ def load_dpo_safety_vi(
         system_prompt: Same system prompt as SFT.
         refusal_only: Keep only safety pairs whose chosen reply refuses or
             discourages the request (benign pairs are always kept).
-        short_pairs: Also add ``short_{train,test}.jsonl`` from
-            ``scripts/build_dpo_refusal_short.py`` (short harmful prompts with a
-            template refusal as chosen, short benign prompts with the helpful reply).
+        extra_sets: Names of extra ``<name>_{train,test}.jsonl`` pair files to add:
+            ``short`` (``scripts/build_dpo_refusal_short.py``) and ``imperative``
+            (``scripts/build_dpo_refusal_imperative.py``). Harmful prompts there have a
+            template refusal as chosen, benign ones the helpful reply.
 
     Returns:
         DatasetDict: ``train`` and ``test`` splits.
@@ -143,12 +144,14 @@ def load_dpo_safety_vi(
             "rejected": [{"role": "assistant", "content": r["rejected"]}],
         }
 
-    if short_pairs:
-        short = load_dataset("json", data_files={
-            "train": os.path.join(data_dir, "short_train.jsonl"),
-            "test": os.path.join(data_dir, "short_test.jsonl"),
+    for name in extra_sets or []:
+        extra = load_dataset("json", data_files={
+            "train": os.path.join(data_dir, f"{name}_train.jsonl"),
+            "test": os.path.join(data_dir, f"{name}_test.jsonl"),
         })
-        ds = DatasetDict({k: concatenate_datasets([ds[k], short[k]]).shuffle(seed=42) for k in ds})
+        ds = DatasetDict({k: concatenate_datasets([ds[k], extra[k]]) for k in ds})
+    if extra_sets:
+        ds = ds.shuffle(seed=42)
 
     return ds.map(to_conversation)
 

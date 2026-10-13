@@ -412,7 +412,7 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
         )
     dataset = load_dpo_safety_vi(data_cfg["data_dir"], system_prompt=system_prompt,
                                  refusal_only=data_cfg.get("refusal_only", False),
-                                 short_pairs=data_cfg.get("short_pairs", False))
+                                 extra_sets=data_cfg.get("extra_sets"))
     print(f"[Stage 3] Train {len(dataset['train']):,} / eval {len(dataset['test']):,} preference pairs")
 
     with open(os.path.join(data_cfg["data_dir"], "refusal_eval.json")) as f:

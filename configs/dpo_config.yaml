@@ -27,7 +27,7 @@ training:
 data:
   data_dir: "./data/dpo_safety_vi"
   system_prompt: "You are a helpful Vietnamese assistant."
-  short_pairs: true
+  extra_sets: [short, imperative]
   refusal_only: true
 
 eval:
