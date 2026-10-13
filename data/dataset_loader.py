@@ -1,7 +1,8 @@
 """Dataset loading utilities for all training stages of Vi-SmolLM2-135M."""
 
+import os
 from itertools import chain
-from datasets import Features, List, Value, load_dataset
+from datasets import DatasetDict, Features, List, Value, load_dataset
 from transformers import PreTrainedTokenizerFast
 
 
@@ -102,21 +103,43 @@ def load_vi_alpaca(
     return ds
 
 
-def load_pkusaferlhf_vi(
-    dataset_name: str = "1997AOF/PKU-SafeRLHF-VI",
-):
-    """Load the PKU-SafeRLHF-VN dataset for DPO safety alignment.
+def load_dpo_safety_vi(
+    data_dir: str = "./data/dpo_safety_vi",
+    system_prompt: str = "You are a helpful Vietnamese assistant.",
+    refusal_only: bool = False,
+) -> DatasetDict:
+    """Load the Vietnamese DPO safety set built by ``scripts/build_dpo_safety_vi.py``.
 
-    Each sample contains:
-        - prompt: The dangerous question
-        - chosen: The safe refusal response
-        - rejected: The harmful response
+    Rows are PKU-SafeRLHF pairs translated to Vietnamese (chosen = safe response,
+    rejected = harmful one) mixed with benign helpful pairs from beyond_dpo_vi.
+    They are returned in TRL's conversational preference format, so DPOTrainer
+    applies the ChatML template and scores only the assistant reply:
+    ``prompt=[system, user]``, ``chosen=[assistant]``, ``rejected=[assistant]``.
+
+    Args:
+        data_dir: Directory with ``train.jsonl`` / ``test.jsonl``.
+        system_prompt: Same system prompt as SFT.
+        refusal_only: Keep only safety pairs whose chosen reply refuses or
+            discourages the request (benign pairs are always kept).
 
     Returns:
-        Dataset: DPO-formatted safety data.
+        DatasetDict: ``train`` and ``test`` splits.
     """
-    ds = load_dataset(dataset_name, split="train")
-    return ds
+    ds = load_dataset("json", data_files={
+        "train": os.path.join(data_dir, "train.jsonl"),
+        "test": os.path.join(data_dir, "test.jsonl"),
+    })
+    if refusal_only:
+        ds = ds.filter(lambda r: r["source"] != "pku-saferlhf" or r["chosen_refusal"])
+
+    def to_conversation(r):
+        return {
+            "prompt": [{"role": "system", "content": system_prompt}, {"role": "user", "content": r["prompt"]}],
+            "chosen": [{"role": "assistant", "content": r["chosen"]}],
+            "rejected": [{"role": "assistant", "content": r["rejected"]}],
+        }
+
+    return ds.map(to_conversation)
 
 
 def load_abliteration_data(

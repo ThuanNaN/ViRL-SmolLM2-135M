@@ -12,7 +12,7 @@ Base Model (HuggingFaceTB/SmolLM2-135M)
     │   └── bkai-foundation-models/vi-alpaca
     │
     ├── Stage 3: DPO ───────────────→ vi-smollm-135m-censored
-    │   └── 1997AOF/PKU-SafeRLHF-VI
+    │   └── PKU-SafeRLHF dịch sang tiếng Việt + beyond_dpo_vi (scripts/build_dpo_safety_vi.py)
     │
     └── Stage 4: Abliteration ──────→ vi-smollm-135m-uncensored
         └── Weight orthogonalization (no training data needed)
@@ -275,7 +275,21 @@ Loss giảm 3.47 → 2.16 (token accuracy 0.44 → 0.57) và đã phẳng từ k
 
 ### 4. DPO Safety Alignment (Stage 3)
 
-**1 GPU:**
+**Bước 1 — dựng dataset** (một lần, khoảng 20 phút trên 1 GPU):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py
+```
+
+Không có bộ DPO an toàn tiếng Việt nào dùng được trên Hub: `1997AOF/PKU-SafeRLHF-VI` đã bị xoá, `vlinhd11/vietnamese-dpo-10k` bị cắt câu (~70 ký tự), `nvidia/Nemotron-Content-VISafe-v1` có license chỉ cho đánh giá. Script dựng bộ `data/dpo_safety_vi/`:
+
+- **Cặp an toàn:** `PKU-Alignment/PKU-SafeRLHF`, chỉ giữ dòng có đúng một câu trả lời safe và câu safe cũng được chấm là tốt hơn (`better_response_id == safer_response_id`), một cặp mỗi prompt. chosen = câu safe, rejected = câu unsafe. Dịch EN→VI bằng `vinai/vinai-translate-en2vi-v2` (mô hình dịch thuần, không từ chối dịch nội dung độc hại như LLM), cắt theo câu ≤ 160 token, beam 4. Cặp có bản dịch lặp hoặc lệch độ dài bị loại.
+- **Cặp vô hại (25%):** `lamhieu/beyond_dpo_vi` (đã là tiếng Việt, MIT), bỏ cặp có câu từ chối ở bất kỳ phía nào, để model không học từ chối mọi thứ.
+- **Prompt đo tỷ lệ từ chối** (`refusal_eval.json`): prompt độc hại từ split *test* của PKU và prompt vô hại từ split *test* của beyond_dpo_vi, không dùng để train.
+- `chosen_refusal` đánh dấu cặp có câu chosen là từ chối/can ngăn; `data.refusal_only: true` để chỉ train trên các cặp này.
+- PKU-SafeRLHF là CC BY-NC 4.0 nên phần an toàn chỉ dùng phi thương mại. Bản dịch được cache trong `translation_cache.jsonl`, chạy lại sẽ tiếp tục từ cache.
+
+**Bước 2 — train.** **1 GPU:**
 
 ```bash
 uv run python finetuning/train.py --mode dpo
@@ -287,10 +301,15 @@ uv run python finetuning/train.py --mode dpo
 torchrun --nproc_per_node=3 finetuning/train.py --mode dpo 2>&1 | tee train_dpo.log
 ```
 
-PKU-SafeRLHF-VI, lr=5e-7, beta=0.1, 2 epochs. Output: `./vi-smollm-135m-censored/`.
+Cấu hình (`configs/dpo_config.yaml`):
 
-> **Chưa chạy được:** `1997AOF/PKU-SafeRLHF-VI` trả về `DatasetNotFoundError` dù đã đăng nhập, và tìm trên Hub
-> không thấy (có thể đã private/xoá). Cần thay dataset (ví dụ dịch `PKU-Alignment/PKU-SafeRLHF`) trước Stage 3.
+- **Format hội thoại:** `prompt=[system, user]`, `chosen/rejected=[assistant]`, cùng system prompt và ChatML với SFT. TRL tự áp chat template và chỉ tính log-prob trên câu trả lời. (Bản cũ tokenize thô, pad tới 2048, không có template.)
+- **Reference model:** bản copy đóng băng của model SFT.
+- lr 1e-6, cosine, warmup 10%, beta 0.1, batch 8 × accum 4 = 32 cặp/step, 2 epoch, `max_length` 1024.
+- Eval DPO loss / reward accuracy trên split test mỗi 50 step, giữ checkpoint có eval loss thấp nhất, early stopping sau 4 lần eval không cải thiện.
+- Đo **tỷ lệ từ chối trước và sau DPO** trên 100 prompt độc hại và 100 prompt vô hại (ChatML, greedy, 96 token), log vào MLflow (`refusal_harmful_before/after`, `refusal_benign_before/after`). Bộ phát hiện từ chối là so khớp từ khoá (`utils/eval_utils.py`), khá rộng nên chỉ dùng để so sánh tương đối.
+
+Output: `./vi-smollm-135m-censored/`.
 
 ### 5. Abliteration — Remove Censorship (Stage 4)
 
@@ -311,10 +330,10 @@ abc-to-cba/
 │   ├── __init__.py
 │   ├── pretrain_config.yaml         # Stage 1: lr=5e-4, batch=8/GPU, cosine, packing 2048
 │   ├── sft_config.yaml              # Stage 2: lr=1e-4, batch=8, ChatML prompt/completion
-│   └── dpo_config.yaml              # Stage 3: lr=5e-7, beta=0.1
+│   └── dpo_config.yaml              # Stage 3: lr=1e-6, beta=0.1
 ├── data/
 │   ├── __init__.py                  # Exports: all loaders + train_byte_level_bpe
-│   ├── dataset_loader.py            # load_culturX_vi, load_vi_alpaca, load_pkusaferlhf_vi, load_abliteration_data, format_for_chatml,
+│   ├── dataset_loader.py            # load_culturX_vi, load_vi_alpaca, load_dpo_safety_vi, load_abliteration_data, format_for_chatml,
 │   │                                #   filter_sft_samples, pack_dataset, load_pretrain_eval_texts
 │   ├── tokenizer_train.py           # Byte-Level BPE tokenizer training
 │   ├── harmful_prompts_vi.json      # 200 harmful prompts (Stage 4)
@@ -323,6 +342,7 @@ abc-to-cba/
 │   ├── __init__.py                  # Exports: run_pretrain, run_sft, run_dpo
 │   └── train.py                     # Unified entry: --mode pretrain|sft|dpo
 ├── scripts/
+│   ├── build_dpo_safety_vi.py       # Stage 3 data: PKU-SafeRLHF EN→VI + benign pairs -> data/dpo_safety_vi/
 │   ├── plot_loss.py                 # Loss/LR figure from trainer_state.json
 │   └── tokenizer_data_scaling.py    # Tokenizer data-scaling experiment
 ├── utils/
@@ -352,7 +372,7 @@ All modes accept `--mode pretrain|sft|dpo` and optional `--config` path.
 |----------|---------|-------------|
 | `load_culturX_vi()` | Stage 1 | Streams CulturX Vietnamese subset |
 | `load_vi_alpaca()` | Stage 2 | Loads vi-alpaca conversations |
-| `load_pkusaferlhf_vi()` | Stage 3 | Loads PKU-SafeRLHF-VI prompt/chosen/rejected triples |
+| `load_dpo_safety_vi()` | Stage 3 | Loads `data/dpo_safety_vi/` as conversational prompt/chosen/rejected |
 | `format_for_chatml()` | Stage 2 | Converts Alpaca → ChatML message format |
 | `load_abliteration_data()` | Stage 4 | Loads harmful/harmless prompt JSON files |
 
@@ -389,7 +409,7 @@ All modes accept `--mode pretrain|sft|dpo` and optional `--config` path.
 | 0. Tokenizer | CulturaX `vi`, 1M docs đầu (`vi_part_00000` + ~360k docs `vi_part_00001`) | `scripts/tokenizer_data_scaling.py`: token/từ trên CulturaX `00010`, `00089`, VTSNLP |
 | 1. Pretrain | CulturaX `vi_part_00000`–`00009` | Trong lúc train: 1,000 docs VTSNLP + 1,000 docs CulturaX `vi_part_00010`; notebook: 300 docs mỗi tập |
 | 2. SFT | `bkai-foundation-models/vi-alpaca`, 98% sau lọc (48,384) | 2% held-out (988, `heldout.jsonl`); notebook: 30 prompt viết tay |
-| 3. DPO | `1997AOF/PKU-SafeRLHF-VI` (hiện không truy cập được) | `data/harmful_prompts_vi.json`, tỷ lệ từ chối theo từ khoá |
+| 3. DPO | `data/dpo_safety_vi/train.jsonl` (PKU-SafeRLHF train dịch + beyond_dpo_vi train) | `test.jsonl` (DPO loss), `refusal_eval.json` (tỷ lệ từ chối, split test) |
 | 4. Abliteration | `data/harmful_prompts_vi.json` + `harmless_prompts_vi.json` (200 mỗi file) để tính refusal direction | Cùng hai file đó (chưa tách; kết quả sẽ lạc quan) |
 
 Tokenizer và pretrain không dùng VTSNLP hay `vi_part_00010`, nên eval Stage 1 là dữ liệu chưa thấy.
@@ -402,7 +422,7 @@ All stage parameters live in `configs/*.yaml`:
 |------|---------------|
 | `pretrain_config.yaml` | `base_model: HuggingFaceTB/SmolLM2-135M`, `init_from_base: true`, shard 0–9, packing 2048, lr=5e-4, cosine, 1 epoch, eval mỗi 2,000 step |
 | `sft_config.yaml` | `base_model: ./vi-smollm-135m-pretrain`, prompt/completion, lr=1e-4, cosine, 2% held-out, ChatML template |
-| `dpo_config.yaml` | `base_model: ./vi-smollm-135m-sft`, lr=5e-7, beta=0.1 |
+| `dpo_config.yaml` | `base_model: ./vi-smollm-135m-sft`, lr=1e-6, beta=0.1, batch 32 cặp, eval mỗi 50 step |
 
 ## Evaluation Matrix
 

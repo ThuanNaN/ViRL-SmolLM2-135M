@@ -27,7 +27,7 @@ import yaml
 from typing import cast
 from transformers import PreTrainedTokenizerFast, Trainer
 from datasets import Dataset
-from utils.model_utils import create_model, load_model, save_model
+from utils.model_utils import create_model, load_model
 from utils.training_utils import (
     get_pretrain_training_args,
     get_sft_training_args,
@@ -39,7 +39,7 @@ from utils.eval_utils import generate_sample, compute_refusal_rate
 from data.dataset_loader import (
     load_culturX_vi,
     load_vi_alpaca,
-    load_pkusaferlhf_vi,
+    load_dpo_safety_vi,
     load_pretrain_eval_texts,
     format_for_chatml,
     filter_sft_samples,
@@ -364,91 +364,117 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
 # ============================================================================
 
 
+def refusal_eval(model, tokenizer, prompts: dict[str, list[str]], system_prompt: str,
+                 max_new_tokens: int = 96) -> dict[str, float]:
+    """Keyword refusal rate on ChatML-wrapped harmful and benign prompts (greedy)."""
+    rates = {}
+    for name, items in prompts.items():
+        chats = [
+            tokenizer.apply_chat_template(
+                [{"role": "system", "content": system_prompt}, {"role": "user", "content": p}],
+                tokenize=False, add_generation_prompt=True,
+            )
+            for p in items
+        ]
+        rates[name] = compute_refusal_rate(model, tokenizer, chats, max_new_tokens=max_new_tokens)
+    return rates
+
+
 def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
     """Apply DPO to align the model with safety behaviors (censoring).
 
-    Uses TRL DPOTrainer with PKU-SafeRLHF-VI data.
-    The reference model is auto-cloned from the SFT model.
+    Uses TRL DPOTrainer on the Vietnamese safety set from
+    ``scripts/build_dpo_safety_vi.py`` (conversational prompt/chosen/rejected,
+    ChatML applied by TRL). The reference model is the frozen SFT model.
+    Refusal rate on held-out harmful/benign prompts is measured before and after.
     """
     from trl.trainer.dpo_trainer import DPOTrainer
 
     config = load_config(config_path)
     print("[Stage 3] DPO Safety Alignment...")
 
-    # Load model and tokenizer
+    # Load model and tokenizer (the SFT dir carries the ChatML chat template)
     model = load_model(config["model"]["base_model"])
     tokenizer = get_tokenizer(config["model"]["base_model"])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = "<pad>"
+    if tokenizer.chat_template is None:
+        raise ValueError(f"{config['model']['base_model']} has no chat template — use the Stage 2 output")
 
-    # Load DPO dataset
-    raw_dataset = load_pkusaferlhf_vi(config["data"]["dataset_name"])
-
-    # Tokenize for DPO: each sample has prompt, chosen, rejected
-    def tokenize_dpo(sample):
-        chosen = tokenizer(
-            sample["chosen"],
-            truncation=True,
-            max_length=2048,
-            padding="max_length",
+    data_cfg = config["data"]
+    train_cfg = config["training"]
+    eval_cfg = config.get("eval") or {}
+    system_prompt = data_cfg.get("system_prompt", "You are a helpful Vietnamese assistant.")
+    if not os.path.isfile(os.path.join(data_cfg["data_dir"], "train.jsonl")):
+        raise FileNotFoundError(
+            f"{data_cfg['data_dir']}/train.jsonl not found — build it first:\n"
+            "  CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py"
         )
-        rejected = tokenizer(
-            sample["rejected"],
-            truncation=True,
-            max_length=2048,
-            padding="max_length",
-        )
-        prompt = tokenizer(
-            sample["prompt"],
-            truncation=True,
-            max_length=2048,
-            padding="max_length",
-        )
-        return {
-            "prompt_input_ids": prompt["input_ids"],
-            "prompt_attention_mask": prompt["attention_mask"],
-            "chosen_input_ids": chosen["input_ids"],
-            "chosen_attention_mask": chosen["attention_mask"],
-            "rejected_input_ids": rejected["input_ids"],
-            "rejected_attention_mask": rejected["attention_mask"],
-        }
+    dataset = load_dpo_safety_vi(data_cfg["data_dir"], system_prompt=system_prompt,
+                                 refusal_only=data_cfg.get("refusal_only", False))
+    print(f"[Stage 3] Train {len(dataset['train']):,} / eval {len(dataset['test']):,} preference pairs")
 
-    tokenized_dataset = raw_dataset.map(tokenize_dpo)
+    with open(os.path.join(data_cfg["data_dir"], "refusal_eval.json")) as f:
+        refusal_prompts = json.load(f)
+    n_eval = eval_cfg.get("refusal_prompts", 100)
+    refusal_prompts = {k: v[:n_eval] for k, v in refusal_prompts.items()}
+    max_new = eval_cfg.get("max_new_tokens", 96)
+    before = refusal_eval(model, tokenizer, refusal_prompts, system_prompt, max_new)
+    print(f"[Stage 3] Refusal rate before DPO: harmful {before['harmful']:.1%}, benign {before['benign']:.1%}")
 
-    # Setup DPOTrainer
+    eval_steps = train_cfg.get("eval_steps")
     dpo_config = get_dpo_training_args(
-        output_dir=config["training"]["output_dir"],
-        beta=config["training"]["beta"],
-        learning_rate=config["training"]["learning_rate"],
-        num_train_epochs=config["training"]["num_train_epochs"],
-        per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
-        logging_steps=config["training"]["logging_steps"],
-        save_strategy=config["training"]["save_strategy"],
-        bf16=config["training"]["bf16"],
+        output_dir=train_cfg["output_dir"],
+        beta=train_cfg["beta"],
+        learning_rate=train_cfg["learning_rate"],
+        num_train_epochs=train_cfg["num_train_epochs"],
+        max_steps=train_cfg.get("max_steps", -1),
+        per_device_train_batch_size=train_cfg["per_device_train_batch_size"],
+        per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 8),
+        gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 1),
+        max_length=train_cfg.get("max_length", 1024),
+        warmup_steps=train_cfg.get("warmup_steps", 0.1),  # < 1 = fraction of total steps
+        lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
+        logging_steps=train_cfg["logging_steps"],
+        eval_strategy="steps" if eval_steps else "no",
+        eval_steps=eval_steps,
+        save_strategy=train_cfg["save_strategy"],
+        save_steps=train_cfg.get("save_steps", 500),
+        save_total_limit=train_cfg.get("save_total_limit"),
+        load_best_model_at_end=bool(eval_steps) and train_cfg.get("load_best_model_at_end", False),
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        bf16=train_cfg["bf16"],
         **get_tracking_args(config, config_path, "dpo"),
     )
 
-    dpo_trainer = DPOTrainer(
+    trainer = DPOTrainer(
         model=model,
-        ref_model=None,  # TRL auto-clones sft_model as reference
+        ref_model=None,  # TRL loads a frozen copy of the SFT model from model.config
         args=dpo_config,
-        train_dataset=tokenized_dataset,
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["test"],
         processing_class=tokenizer,
+        callbacks=get_early_stopping_callbacks(config.get("early_stopping")),
     )
 
     print("[Stage 3] Starting DPO training...")
-    dpo_trainer.train()
-    save_model(model, config["training"]["output_dir"])
-    print(f"[Stage 3] DPO complete. Model saved to {config['training']['output_dir']}")
+    trainer.train()
+    save_final_model(trainer, train_cfg["output_dir"])
+    print(f"[Stage 3] DPO complete. Model saved to {train_cfg['output_dir']}")
 
-    # --- Eval: Refusal rate on harmful prompts ---
-    print("[Stage 3] Evaluating refusal rate...")
-    from data.dataset_loader import load_abliteration_data
-    harmful, _ = load_abliteration_data()
-    # Use a sample for speed
-    sample_harmful_prompts = harmful[:20]
-    refusal_rate = compute_refusal_rate(model, tokenizer, sample_harmful_prompts, max_new_tokens=64)
-    print(f"[Stage 3] Refusal rate on {len(sample_harmful_prompts)} harmful prompts: {refusal_rate:.1%}")
+    with tracking_run(trainer) as mlflow:
+        metrics = trainer.evaluate()
+        print(f"[Stage 3] Eval loss {metrics['eval_loss']:.4f}, "
+              f"reward accuracy {metrics.get('eval_rewards/accuracies', float('nan')):.1%}, "
+              f"margin {metrics.get('eval_rewards/margins', float('nan')):.3f}")
+        after = refusal_eval(trainer.model, tokenizer, refusal_prompts, system_prompt, max_new)
+        print(f"[Stage 3] Refusal rate after DPO: harmful {after['harmful']:.1%} "
+              f"(before {before['harmful']:.1%}), benign {after['benign']:.1%} (before {before['benign']:.1%})")
+        if mlflow:
+            for k in ("harmful", "benign"):
+                mlflow.log_metric(f"refusal_{k}_before", before[k])
+                mlflow.log_metric(f"refusal_{k}_after", after[k])
 
 
 # ============================================================================

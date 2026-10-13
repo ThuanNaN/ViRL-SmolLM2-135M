@@ -1,24 +1,40 @@
 # DPO Safety Alignment Configuration for Vi-SmolLM2-135M
 
 model:
-  base_model: "./vi-smollm-135m-sft"  # Path to SFT model
+  base_model: "./vi-smollm-135m-sft"  # Path to SFT model (also the frozen reference)
 
 training:
   output_dir: "./vi-smollm-135m-censored"
-  learning_rate: 5.0e-7
+  learning_rate: 1.0e-6
+  lr_scheduler_type: "cosine"
+  warmup_steps: 0.1              # < 1 = fraction of total steps
   beta: 0.1
   num_train_epochs: 2
-  per_device_train_batch_size: 4
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 4 # 32 pairs / step
+  max_length: 1024               # prompt + reply tokens; longer pairs are truncated (keep_start)
   logging_steps: 10
-  save_strategy: "epoch"
+  eval_steps: 50
+  save_strategy: "steps"
+  save_steps: 50                 # must be a multiple of eval_steps (load_best_model_at_end)
+  save_total_limit: 3
+  load_best_model_at_end: true   # final model = lowest eval DPO loss
   bf16: true
 
 data:
-  dataset_name: "1997AOF/PKU-SafeRLHF-VI"
-  fields:
-    prompt: "prompt"
-    chosen: "chosen"
-    rejected: "rejected"
+  # Built by: CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py
+  data_dir: "./data/dpo_safety_vi"
+  system_prompt: "You are a helpful Vietnamese assistant."  # same as SFT
+  refusal_only: false            # true = only safety pairs whose chosen reply refuses/discourages
+
+eval:
+  refusal_prompts: 100           # harmful + benign prompts from refusal_eval.json (test split)
+  max_new_tokens: 96
+
+early_stopping:
+  patience: 4                    # stop after 4 evals (200 steps) without a better eval_loss
+  threshold: 0.0
 
 tracking:
   report_to: "mlflow"             # "none" to disable

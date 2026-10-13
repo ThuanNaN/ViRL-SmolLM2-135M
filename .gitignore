@@ -11,3 +11,6 @@ mlruns/
 mlartifacts/
 mlflow.db
 TODO.md
+
+# Stage 3 DPO data built by scripts/build_dpo_safety_vi.py (CC BY-NC derived)
+data/dpo_safety_vi/
