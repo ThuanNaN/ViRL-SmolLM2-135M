@@ -2,7 +2,7 @@
 
 import os
 from itertools import chain
-from datasets import DatasetDict, Features, List, Value, concatenate_datasets, load_dataset
+from datasets import DatasetDict, Features, List, Value, load_dataset
 from transformers import PreTrainedTokenizerFast
 
 
@@ -106,13 +106,11 @@ def load_vi_alpaca(
 def load_dpo_safety_vi(
     data_dir: str = "./data/dpo_safety_vi",
     system_prompt: str = "You are a helpful Vietnamese assistant.",
-    refusal_only: bool = False,
-    extra_sets: list[str] | None = None,
 ) -> DatasetDict:
     """Load the Vietnamese DPO safety set built by ``scripts/build_dpo_safety_vi.py``.
 
-    Rows are PKU-SafeRLHF pairs translated to Vietnamese (chosen = safe response,
-    rejected = harmful one) mixed with benign helpful pairs from beyond_dpo_vi.
+    Rows are harmful prompts (chosen = refusal or safe reply, rejected = harmful reply) mixed with
+    benign prompts (chosen = helpful reply, rejected = refusal), in long, short and command phrasing.
     They are returned in TRL's conversational preference format, so DPOTrainer
     applies the ChatML template and scores only the assistant reply:
     ``prompt=[system, user]``, ``chosen=[assistant]``, ``rejected=[assistant]``.
@@ -120,12 +118,6 @@ def load_dpo_safety_vi(
     Args:
         data_dir: Directory with ``train.jsonl`` / ``test.jsonl``.
         system_prompt: Same system prompt as SFT.
-        refusal_only: Keep only safety pairs whose chosen reply refuses or
-            discourages the request (benign pairs are always kept).
-        extra_sets: Names of extra ``<name>_{train,test}.jsonl`` pair files to add:
-            ``short`` (``scripts/build_dpo_refusal_short.py``) and ``imperative``
-            (``scripts/build_dpo_refusal_imperative.py``). Harmful prompts there have a
-            template refusal as chosen, benign ones the helpful reply.
 
     Returns:
         DatasetDict: ``train`` and ``test`` splits.
@@ -134,8 +126,6 @@ def load_dpo_safety_vi(
         "train": os.path.join(data_dir, "train.jsonl"),
         "test": os.path.join(data_dir, "test.jsonl"),
     })
-    if refusal_only:
-        ds = ds.filter(lambda r: r["source"] != "pku-saferlhf" or r["chosen_refusal"])
 
     def to_conversation(r):
         return {
@@ -143,15 +133,6 @@ def load_dpo_safety_vi(
             "chosen": [{"role": "assistant", "content": r["chosen"]}],
             "rejected": [{"role": "assistant", "content": r["rejected"]}],
         }
-
-    for name in extra_sets or []:
-        extra = load_dataset("json", data_files={
-            "train": os.path.join(data_dir, f"{name}_train.jsonl"),
-            "test": os.path.join(data_dir, f"{name}_test.jsonl"),
-        })
-        ds = DatasetDict({k: concatenate_datasets([ds[k], extra[k]]) for k in ds})
-    if extra_sets:
-        ds = ds.shuffle(seed=42)
 
     return ds.map(to_conversation)
 

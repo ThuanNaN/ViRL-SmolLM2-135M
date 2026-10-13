@@ -25,10 +25,9 @@ training:
   bf16: true
 
 data:
+  # Built by: CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py
   data_dir: "./data/dpo_safety_vi"
   system_prompt: "You are a helpful Vietnamese assistant."
-  extra_sets: [short, imperative]
-  refusal_only: true
 
 eval:
   refusal_prompts: 100

@@ -410,9 +410,7 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
             f"{data_cfg['data_dir']}/train.jsonl not found — build it first:\n"
             "  CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py"
         )
-    dataset = load_dpo_safety_vi(data_cfg["data_dir"], system_prompt=system_prompt,
-                                 refusal_only=data_cfg.get("refusal_only", False),
-                                 extra_sets=data_cfg.get("extra_sets"))
+    dataset = load_dpo_safety_vi(data_cfg["data_dir"], system_prompt=system_prompt)
     print(f"[Stage 3] Train {len(dataset['train']):,} / eval {len(dataset['test']):,} preference pairs")
 
     with open(os.path.join(data_cfg["data_dir"], "refusal_eval.json")) as f:

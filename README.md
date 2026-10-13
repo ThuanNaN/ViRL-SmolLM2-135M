@@ -283,11 +283,22 @@ CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safe
 
 Không có bộ DPO an toàn tiếng Việt nào dùng được trên Hub: `1997AOF/PKU-SafeRLHF-VI` đã bị xoá, `vlinhd11/vietnamese-dpo-10k` bị cắt câu (~70 ký tự), `nvidia/Nemotron-Content-VISafe-v1` có license chỉ cho đánh giá. Script dựng bộ `data/dpo_safety_vi/`:
 
-- **Cặp an toàn:** `PKU-Alignment/PKU-SafeRLHF`, chỉ giữ dòng có đúng một câu trả lời safe và câu safe cũng được chấm là tốt hơn (`better_response_id == safer_response_id`), một cặp mỗi prompt. chosen = câu safe, rejected = câu unsafe. Dịch EN→VI bằng `vinai/vinai-translate-en2vi-v2` (mô hình dịch thuần, không từ chối dịch nội dung độc hại như LLM), cắt theo câu ≤ 160 token, beam 4. Cặp có bản dịch lặp hoặc lệch độ dài bị loại.
-- **Cặp vô hại (25%):** `lamhieu/beyond_dpo_vi` (đã là tiếng Việt, MIT), bỏ cặp có câu từ chối ở bất kỳ phía nào, để model không học từ chối mọi thứ.
-- **Prompt đo tỷ lệ từ chối** (`refusal_eval.json`): prompt độc hại từ split *test* của PKU và prompt vô hại từ split *test* của beyond_dpo_vi, không dùng để train.
-- `chosen_refusal` đánh dấu cặp có câu chosen là từ chối/can ngăn; `data.refusal_only: true` để chỉ train trên các cặp này.
-- PKU-SafeRLHF là CC BY-NC 4.0 nên phần an toàn chỉ dùng phi thương mại. Bản dịch được cache trong `translation_cache.jsonl`, chạy lại sẽ tiếp tục từ cache.
+Một script, một bộ dữ liệu (chạy lại sẽ ghi đè toàn bộ). Mỗi dòng là `(prompt, chosen, rejected)` với `source`:
+
+| source | Prompt | chosen | rejected |
+|---|---|---|---|
+| `pku-long` | prompt dài của PKU-SafeRLHF, dịch EN→VI | câu safe của PKU có từ chối/can ngăn | câu unsafe của PKU |
+| `refusal-short` | prompt PKU ≤ 120 ký tự | câu từ chối mẫu (6 câu cố định) | câu unsafe của PKU |
+| `refusal-command` | cùng loại, viết lại thành câu lệnh ("Hướng dẫn cách …", "Chỉ tôi cách …") | câu từ chối mẫu | câu unsafe của PKU |
+| `benign-long` | `lamhieu/beyond_dpo_vi` (không có từ chối ở cả hai phía) | câu trả lời tốt | câu trả lời kém |
+| `benign-short` | prompt beyond_dpo_vi ngắn | câu trả lời tốt | câu từ chối mẫu |
+| `benign-command` | beyond_dpo_vi viết lại thành câu lệnh + chỉ thị ngắn của `vi-alpaca` (loại các prompt trong held-out SFT) | câu trả lời tham chiếu | câu từ chối mẫu |
+
+- PKU: chỉ giữ dòng có đúng một câu trả lời safe và câu safe cũng được chấm tốt hơn, một cặp mỗi prompt. Dịch bằng `vinai/vinai-translate-en2vi-v2` (mô hình dịch thuần, không từ chối dịch nội dung độc hại như LLM), cắt theo câu ≤ 160 token, beam 4; cặp có bản dịch lặp hoặc lệch độ dài bị loại.
+- Các cặp vô hại có *câu từ chối làm rejected* để model không học từ chối mọi thứ. Train 10,364 cặp, test 1,477 cặp.
+- **Prompt đo tỷ lệ từ chối** (`refusal_eval.json`) lấy từ split *test*, không train: `harmful_{long,short,command}` và `benign_{long,short,command}`.
+- Hai file `data/harmful_prompts_vi.json` / `harmless_prompts_vi.json` của Stage 4 không dùng trong script này.
+- PKU-SafeRLHF là CC BY-NC 4.0 nên dữ liệu chỉ dùng phi thương mại (đã gitignore). Bản dịch được cache trong `translation_cache.jsonl`; khi cache đủ thì chạy lại không cần GPU.
 
 **Bước 2 — train.** **1 GPU:**
 
@@ -306,10 +317,9 @@ Cấu hình (`configs/dpo_config.yaml`):
 - **Format hội thoại:** `prompt=[system, user]`, `chosen/rejected=[assistant]`, cùng system prompt và ChatML với SFT. TRL tự áp chat template và chỉ tính log-prob trên câu trả lời. (Bản cũ tokenize thô, pad tới 2048, không có template.)
 - **Reference model:** bản copy đóng băng của model SFT.
 - **Loss DPO + SFT** (`loss_type: ["sigmoid", "sft"]`, kiểu RPO): thêm NLL trên câu chosen để model học *tạo ra* câu từ chối, vì model SFT gần như chưa bao giờ từ chối.
-- `refusal_only: true`: 2,029 cặp an toàn có chosen là từ chối + 2,454 cặp vô hại (4,483 train / 592 test).
 - lr 5e-6, cosine, warmup 10%, beta 0.1, batch 8 × accum 4 = 32 cặp/step, 3 epoch (~420 step), `max_length` 1024.
 - Eval DPO loss / reward accuracy trên split test mỗi 50 step, giữ checkpoint có eval loss thấp nhất, early stopping sau 4 lần eval không cải thiện.
-- Đo **tỷ lệ từ chối trước và sau DPO** trên 100 prompt độc hại và 100 prompt vô hại (ChatML, greedy, 96 token), log vào MLflow (`refusal_harmful_before/after`, `refusal_benign_before/after`). Bộ phát hiện từ chối là so khớp từ khoá (`utils/eval_utils.py`), khá rộng nên chỉ dùng để so sánh tương đối.
+- Đo **tỷ lệ từ chối trước và sau DPO** trên 100 prompt mỗi bộ trong `refusal_eval.json` (ChatML, greedy, 96 token), log vào MLflow (`refusal_<bộ>_before/after`). Bộ phát hiện là regex *strict* (xin lỗi / không thể giúp), không tính câu mở đầu "Không, …" như bộ từ khoá rộng `is_refusal`.
 
 Output: `./vi-smollm-135m-censored/`.
 
@@ -321,7 +331,21 @@ Output: `./vi-smollm-135m-censored/`.
 | Tỷ lệ từ chối, 100 prompt vô hại | 4% | 8% |
 | Eval loss / reward acc / margin | 0.693 / 51% / 0 | 0.593 / 73% / 0.25 |
 
-Loss giảm nhưng hành vi gần như không đổi (±5 điểm là nhiễu với 100 prompt). `rewards/chosen` đứng yên ~0, chỉ `rewards/rejected` giảm: DPO chỉ học *tránh* câu độc hại chứ không học *từ chối*, vì model SFT gần như không bao giờ sinh câu từ chối và chỉ 28% chosen là từ chối. Cấu hình hiện tại (DPO + SFT loss, `refusal_only`, lr 5e-6, 3 epoch) sửa các điểm này.
+Loss giảm nhưng hành vi gần như không đổi (±5 điểm là nhiễu với 100 prompt). `rewards/chosen` đứng yên ~0, chỉ `rewards/rejected` giảm: DPO chỉ học *tránh* câu độc hại chứ không học *từ chối*, vì model SFT gần như không bao giờ sinh câu từ chối và chỉ 28% chosen là từ chối. Cấu hình hiện tại (DPO + SFT loss, lr 5e-6, 3 epoch, thêm dữ liệu từ chối ngắn/câu lệnh) sửa các điểm này.
+
+#### DPO results — run 3 (DPO + SFT loss, lr 5e-6, 3 epoch; thêm dữ liệu từ chối ngắn, trước khi gộp dataset)
+
+Tỷ lệ từ chối strict (SFT → DPO), n = 95–200 mỗi bộ:
+
+| Bộ prompt | SFT | DPO |
+|---|---|---|
+| harmful, dài (PKU test) | 2% | 72% |
+| harmful, ngắn (PKU test) | 5% | 55% |
+| harmful, file Stage 4 (116 prompt unique) | 0% | 27% |
+| benign, dài / ngắn | 0% / 1% | 8% / 7% |
+| harmless, file Stage 4 (95 prompt unique) | 0% | 0% |
+
+PPL held-out 3.68 → 3.75. Điểm yếu: file Stage 4 là câu lệnh ("Hướng dẫn chế tạo …") nên tổng quát hóa kém, và file này chỉ có 116/95 prompt unique (85 và 106 dòng cùng một mẫu). Bộ dữ liệu hiện tại thêm các cặp `*-command` để xử lý điểm này.
 
 ### 5. Abliteration — Remove Censorship (Stage 4)
 
