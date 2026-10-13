@@ -3,14 +3,18 @@ __pycache__/
 *.log
 .env
 claude-openrouter.sh
+
 vi_smollm_tokenizer/
 vi-smollm-135m-pretrain/
 vi-smollm-135m-sft/
+vi-smollm-135m-censored/
+
 vi-smollm-135m-sft/mlflow.db
 mlruns/
 mlartifacts/
 mlflow.db
+
+data/dpo_safety_vi/
+
 TODO.md
 
-# Stage 3 DPO data built by scripts/build_dpo_safety_vi.py (CC BY-NC derived)
-data/dpo_safety_vi/
