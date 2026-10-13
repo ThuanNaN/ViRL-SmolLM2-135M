@@ -68,8 +68,8 @@ All Python modules use `__init__.py` with explicit `__all__` exports:
 
 ### Data Files
 
-- Abliteration requires `data/harmful_prompts_vi.json` and `data/harmless_prompts_vi.json` (200 prompts each).
-- These are loaded by `data/dataset_loader.py` → `load_abliteration_data()` and consumed by `abliteration/remove_censorship.py` → `run_abliteration()`.
+- Abliteration requires `data/harmful_prompts_vi.json` and `data/harmless_prompts_vi.json` (deduplicated: 116 harmful / 95 harmless unique prompts; Stage 4 also draws extra prompts from `data/dpo_safety_vi/train.jsonl`).
+- They are read by `abliteration/remove_censorship.py` → `run_abliteration()`. Evaluation uses held-out prompts from `data/dpo_safety_vi/refusal_eval.json`.
 
 ### Running the Pipeline
 

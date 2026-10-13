@@ -353,7 +353,24 @@ PPL held-out 3.68 → 3.75. Điểm yếu: file Stage 4 là câu lệnh ("Hướ
 uv run python abliteration/remove_censorship.py
 ```
 
-Weight orthogonalization removes the refusal vector from model weights. Requires `data/harmful_prompts_vi.json` and `data/harmless_prompts_vi.json`. Output: `./vi-smollm-135m-uncensored/`.
+Weight orthogonalization (Arditi et al.) loại bỏ "refusal direction" khỏi trọng số, không train thêm. Quy trình:
+
+1. Prompt được bọc ChatML (như lúc train) và lấy residual stream ở **token prompt cuối** (header `assistant`).
+2. Direction mỗi layer = chuẩn hóa(mean harmful − mean harmless). Prompt direction: `data/harmful_prompts_vi.json` (116 prompt unique) + `harmless_prompts_vi.json` (95) + 300 prompt ngắn/câu lệnh mỗi phía lấy từ tập train DPO.
+3. Thử từng layer ứng viên (20–80% độ sâu) trên một bản sao đã orthogonalize, chấm bằng tỷ lệ từ chối strict trên validation **và held-out loss**: layer chỉ hợp lệ nếu loss tăng ≤ 0.1. (Chọn chỉ theo tỷ lệ từ chối sẽ chọn layer làm model nói nhảm.)
+4. Chiếu direction ra khỏi mọi ma trận ghi vào residual stream: `embed_tokens`, `self_attn.o_proj`, `mlp.down_proj`.
+5. Đánh giá trên `refusal_eval.json` (tập test DPO, không dùng để tính direction) và ghi `vi-smollm-135m-uncensored/abliteration_report.json`.
+
+Kết quả (layer 23, tỷ lệ từ chối strict, censored → uncensored):
+
+| Bộ prompt | n | Trước | Sau |
+|---|---|---|---|
+| harmful, dài | 100 | 92% | 12% |
+| harmful, ngắn | 100 | 69% | 5% |
+| harmful, câu lệnh | 100 | 94% | 28% |
+| benign, dài / ngắn / câu lệnh | 85 / 100 / 100 | 18% / 5% / 2% | 2% / 1% / 0% |
+
+Held-out loss 1.354 → 1.374 (+0.02). Một số câu hết từ chối nhưng không làm theo yêu cầu mà trả lời lạc đề, do model SFT 135M vốn yếu. Output: `./vi-smollm-135m-uncensored/`.
 
 ## Project Structure
 

@@ -3,18 +3,14 @@ __pycache__/
 *.log
 .env
 claude-openrouter.sh
-
+data/dpo_safety_vi/
 vi_smollm_tokenizer/
 vi-smollm-135m-pretrain/
 vi-smollm-135m-sft/
 vi-smollm-135m-censored/
-
+vi-smollm-135m-uncensored
 vi-smollm-135m-sft/mlflow.db
 mlruns/
 mlartifacts/
 mlflow.db
-
-data/dpo_safety_vi/
-
-TODO.md
 
