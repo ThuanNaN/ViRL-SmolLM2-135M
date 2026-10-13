@@ -2,7 +2,7 @@
 
 import os
 from itertools import chain
-from datasets import DatasetDict, Features, List, Value, load_dataset
+from datasets import DatasetDict, Features, List, Value, concatenate_datasets, load_dataset
 from transformers import PreTrainedTokenizerFast
 
 
@@ -107,6 +107,7 @@ def load_dpo_safety_vi(
     data_dir: str = "./data/dpo_safety_vi",
     system_prompt: str = "You are a helpful Vietnamese assistant.",
     refusal_only: bool = False,
+    short_pairs: bool = False,
 ) -> DatasetDict:
     """Load the Vietnamese DPO safety set built by ``scripts/build_dpo_safety_vi.py``.
 
@@ -121,6 +122,9 @@ def load_dpo_safety_vi(
         system_prompt: Same system prompt as SFT.
         refusal_only: Keep only safety pairs whose chosen reply refuses or
             discourages the request (benign pairs are always kept).
+        short_pairs: Also add ``short_{train,test}.jsonl`` from
+            ``scripts/build_dpo_refusal_short.py`` (short harmful prompts with a
+            template refusal as chosen, short benign prompts with the helpful reply).
 
     Returns:
         DatasetDict: ``train`` and ``test`` splits.
@@ -138,6 +142,13 @@ def load_dpo_safety_vi(
             "chosen": [{"role": "assistant", "content": r["chosen"]}],
             "rejected": [{"role": "assistant", "content": r["rejected"]}],
         }
+
+    if short_pairs:
+        short = load_dataset("json", data_files={
+            "train": os.path.join(data_dir, "short_train.jsonl"),
+            "test": os.path.join(data_dir, "short_test.jsonl"),
+        })
+        ds = DatasetDict({k: concatenate_datasets([ds[k], short[k]]).shuffle(seed=42) for k in ds})
 
     return ds.map(to_conversation)
 

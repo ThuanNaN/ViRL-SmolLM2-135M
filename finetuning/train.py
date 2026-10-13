@@ -365,8 +365,8 @@ def run_sft(config_path: str = "text/configs/sft_config.yaml"):
 
 
 def refusal_eval(model, tokenizer, prompts: dict[str, list[str]], system_prompt: str,
-                 max_new_tokens: int = 96) -> dict[str, float]:
-    """Keyword refusal rate on ChatML-wrapped harmful and benign prompts (greedy)."""
+                 max_new_tokens: int = 96, strict: bool = True) -> dict[str, float]:
+    """Refusal rate per prompt set on ChatML-wrapped prompts (greedy); strict = explicit refusals only."""
     rates = {}
     for name, items in prompts.items():
         chats = [
@@ -376,7 +376,7 @@ def refusal_eval(model, tokenizer, prompts: dict[str, list[str]], system_prompt:
             )
             for p in items
         ]
-        rates[name] = compute_refusal_rate(model, tokenizer, chats, max_new_tokens=max_new_tokens)
+        rates[name] = compute_refusal_rate(model, tokenizer, chats, max_new_tokens=max_new_tokens, strict=strict)
     return rates
 
 
@@ -411,7 +411,8 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
             "  CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py"
         )
     dataset = load_dpo_safety_vi(data_cfg["data_dir"], system_prompt=system_prompt,
-                                 refusal_only=data_cfg.get("refusal_only", False))
+                                 refusal_only=data_cfg.get("refusal_only", False),
+                                 short_pairs=data_cfg.get("short_pairs", False))
     print(f"[Stage 3] Train {len(dataset['train']):,} / eval {len(dataset['test']):,} preference pairs")
 
     with open(os.path.join(data_cfg["data_dir"], "refusal_eval.json")) as f:
@@ -420,7 +421,7 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
     refusal_prompts = {k: v[:n_eval] for k, v in refusal_prompts.items()}
     max_new = eval_cfg.get("max_new_tokens", 96)
     before = refusal_eval(model, tokenizer, refusal_prompts, system_prompt, max_new)
-    print(f"[Stage 3] Refusal rate before DPO: harmful {before['harmful']:.1%}, benign {before['benign']:.1%}")
+    print("[Stage 3] Strict refusal rate before DPO: " + ", ".join(f"{k} {v:.1%}" for k, v in before.items()))
 
     eval_steps = train_cfg.get("eval_steps")
     dpo_config = get_dpo_training_args(
@@ -471,10 +472,10 @@ def run_dpo(config_path: str = "text/configs/dpo_config.yaml"):
               f"reward accuracy {metrics.get('eval_rewards/accuracies', float('nan')):.1%}, "
               f"margin {metrics.get('eval_rewards/margins', float('nan')):.3f}")
         after = refusal_eval(trainer.model, tokenizer, refusal_prompts, system_prompt, max_new)
-        print(f"[Stage 3] Refusal rate after DPO: harmful {after['harmful']:.1%} "
-              f"(before {before['harmful']:.1%}), benign {after['benign']:.1%} (before {before['benign']:.1%})")
+        print("[Stage 3] Strict refusal rate after DPO: " + ", ".join(
+            f"{k} {after[k]:.1%} (before {before[k]:.1%})" for k in after))
         if mlflow:
-            for k in ("harmful", "benign"):
+            for k in after:
                 mlflow.log_metric(f"refusal_{k}_before", before[k])
                 mlflow.log_metric(f"refusal_{k}_after", after[k])
 

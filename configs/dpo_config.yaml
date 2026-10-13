@@ -1,45 +1,45 @@
 # DPO Safety Alignment Configuration for Vi-SmolLM2-135M
 
 model:
-  base_model: "./vi-smollm-135m-sft"  # Path to SFT model (also the frozen reference)
+  base_model: "./vi-smollm-135m-sft"
 
 training:
   output_dir: "./vi-smollm-135m-censored"
-  learning_rate: 5.0e-6          # run 1: 1e-6 was too weak (margin 0.25, refusal 2% -> 6%)
+  learning_rate: 5.0e-6
   lr_scheduler_type: "cosine"
-  warmup_steps: 0.1              # < 1 = fraction of total steps
+  warmup_steps: 0.1
   beta: 0.1
-  loss_type: ["sigmoid", "sft"]  # DPO + NLL on chosen (run 1 only pushed rejected down)
-  loss_weights: [1.0, 1.0]
+  loss_type: ["sigmoid", "sft"]
+  loss_weights: [1.0, 2.0]
   num_train_epochs: 3
   per_device_train_batch_size: 8
   per_device_eval_batch_size: 8
-  gradient_accumulation_steps: 4 # 32 pairs / step
-  max_length: 1024               # prompt + reply tokens; longer pairs are truncated (keep_start)
+  gradient_accumulation_steps: 4
+  max_length: 1024
   logging_steps: 10
   eval_steps: 50
   save_strategy: "steps"
-  save_steps: 50                 # must be a multiple of eval_steps (load_best_model_at_end)
+  save_steps: 50
   save_total_limit: 3
-  load_best_model_at_end: true   # final model = lowest eval DPO loss
+  load_best_model_at_end: true
   bf16: true
 
 data:
-  # Built by: CUDA_VISIBLE_DEVICES=0 uv run --with sentencepiece python scripts/build_dpo_safety_vi.py
   data_dir: "./data/dpo_safety_vi"
-  system_prompt: "You are a helpful Vietnamese assistant."  # same as SFT
-  refusal_only: true             # only safety pairs whose chosen reply refuses/discourages (+ all benign)
+  system_prompt: "You are a helpful Vietnamese assistant."
+  short_pairs: true
+  refusal_only: true
 
 eval:
-  refusal_prompts: 100           # harmful + benign prompts from refusal_eval.json (test split)
+  refusal_prompts: 100
   max_new_tokens: 96
 
 early_stopping:
-  patience: 4                    # stop after 4 evals (200 steps) without a better eval_loss
+  patience: 4
   threshold: 0.0
 
 tracking:
   report_to: "mlflow"             # "none" to disable
-  tracking_uri: "sqlite:///mlflow.db"  # local; UI: uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+  tracking_uri: "sqlite:///mlflow.db"
   experiment_name: "vi-smollm2-135m"
-  run_name: null                 # null = <stage>-<YYYYmmdd-HHMM>
+  run_name: null
